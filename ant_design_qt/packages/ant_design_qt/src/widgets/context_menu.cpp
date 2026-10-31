@@ -189,11 +189,17 @@ struct ContextMenuLayoutMetrics {
   bool iconColumn = false;
 };
 
-ContextMenuLayoutMetrics resolveLayoutMetrics(const QMenu* menu, const QFontMetrics& metrics) {
+ContextMenuLayoutMetrics resolveLayoutMetrics(const QMenu* menu) {
   ContextMenuLayoutMetrics result;
   if (!menu) {
     return result;
   }
+  // Both columns are measured with the menu font, not the visual-style font.
+  // maximumShortcutWidth is only ever used to reserve the part of the shortcut
+  // column that QMenu itself cannot see (badge metadata), so it has to be
+  // measured the same way QMenu measures the column it *can* see --
+  // otherwise a font whose advances differ by a pixel reserves too little and
+  // a badged item ends up narrower than the same text spelled out after a tab.
   const QFontMetrics qtMetrics(menu->font());
   for (const QAction* action : menu->actions()) {
     if (!action || !action->isVisible()) {
@@ -204,7 +210,7 @@ ContextMenuLayoutMetrics resolveLayoutMetrics(const QMenu* menu, const QFontMetr
     if (!action->isSeparator()) {
       result.maximumShortcutWidth =
           std::max(result.maximumShortcutWidth,
-                   metrics.horizontalAdvance(actionShortcutText(action, action->text())));
+                   qtMetrics.horizontalAdvance(actionShortcutText(action, action->text())));
       result.qtShortcutWidth =
           std::max(result.qtShortcutWidth,
                    qtMetrics.horizontalAdvance(actionShortcutText(action, action->text(), false)));
@@ -426,6 +432,14 @@ class AdContextMenuStyle final : public QProxyStyle {
 
   void drawControl(ControlElement element, const QStyleOption* option, QPainter* painter,
                    const QWidget* widget = nullptr) const override {
+    // Qt 5 asks the style for the menu's empty area *after* PE_PanelMenu has
+    // already painted the rounded surface, and the base style answers by filling
+    // the whole widget rect with the opaque palette brush.  On a translucent
+    // popup that squares off every anti-aliased corner, so the area stays
+    // untouched here; the panel primitive is the only surface painter.
+    if (element == CE_MenuEmptyArea) {
+      return;
+    }
     if (element != CE_MenuItem || !option || !painter) {
       QProxyStyle::drawControl(element, option, painter, widget);
       return;
@@ -594,8 +608,8 @@ class AdContextMenuStyle final : public QProxyStyle {
     const auto& visual = visualStyle();
     // A plain QMenu can inherit this style, but its mutations do not reach our
     // actionEvent override. Keep its columns independent of the popup owner.
-    if (menu != menu_) return resolveLayoutMetrics(menu, QFontMetrics(visual.font));
-    if (!layoutMetrics_) layoutMetrics_ = resolveLayoutMetrics(menu_, QFontMetrics(visual.font));
+    if (menu != menu_) return resolveLayoutMetrics(menu);
+    if (!layoutMetrics_) layoutMetrics_ = resolveLayoutMetrics(menu_);
     return *layoutMetrics_;
   }
 
