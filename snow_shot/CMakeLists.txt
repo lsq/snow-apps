@@ -5916,7 +5916,6 @@ if(SNOW_SHOT_BUILD_TESTS)
         snow-shot-pinned-middle-click-offscreen-tests
         snow-shot-pinned-double-click-tests
         snow-shot-pinned-double-click-offscreen-tests
-        snow-shot-pinned-window-tests
         snow-shot-pinned-translation-tests
         snow-shot-pinned-async-presentation-tests
         snow-shot-pinned-window-pool-tests
@@ -5941,7 +5940,11 @@ if(SNOW_SHOT_BUILD_TESTS)
         snow-shot-pinned-history-shortcut-tests
     )
     if(WIN32)
+        # Registered (and given its own platform/property block) only inside
+        # the WIN32 branch above; set_tests_properties aborts configuration for
+        # names that were never added as tests.
         list(APPEND _snow_shot_pinned_window_test_names
+            snow-shot-pinned-window-tests
             snow-shot-pinned-native-drag-shortcut-tests
             snow-shot-pinned-system-move-shortcut-real-mouse-tests
             snow-shot-pinned-native-drag-dpi-tests
