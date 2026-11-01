@@ -1027,6 +1027,15 @@ void moreMenuOffersPinStitchAndDelete() {
     QEvent languageChange(QEvent::LanguageChange);
     QApplication::sendEvent(pinnableEntry, &languageChange);
     flushEvents();
+    // The entry builds its menu per open, so a language change is allowed to replace it.
+    // Read the actions back from whatever menu is open now instead of trusting the
+    // pointers captured before the change.
+    menu = visibleMenu(pinnableEntry);
+    require(menu != nullptr && menu->actions().size() == 4,
+            "an open More menu survives a language change");
+    pin = menu->actions().at(0);
+    stitch = menu->actions().at(1);
+    remove = menu->actions().at(3);
     require(pin->text() == QStringLiteral("Pin to screen") &&
                 pin->toolTip() == QStringLiteral("Pin this screenshot to the screen") &&
                 stitch->text() == QStringLiteral("Stitch Image") &&

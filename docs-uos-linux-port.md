@@ -6644,3 +6644,27 @@ re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边�
 `QWidget::setParent → QWidgetPrivate::reparentFocusWidgets` 在"半销毁"的 widget 上崩掉
 （`snow-shot-translation-settings-tests` 的 C0000005，地址 `Qt5Widgetsd+0x52F9A`）。
 修法是先让视图忘掉它（`popupContentView_->setContentWidget(nullptr)`），再摘走。
+
+### C.7 断言失败不能走静态析构（一条 SELinux 式的整类 SEGFAULT）
+
+所有 `require()` 助手都是「`std::cerr << message` 然后 `std::exit(EXIT_FAILURE)`」。`exit()`
+会**在测试刚造出来的窗口还活着的时候**跑静态析构：`adqt` 的几个单例（`TimingHub`、图标缓存
+的 `QMutex`）此时已经没了，于是一个控件收到 `QEvent::Hide` 走到 `cancelTimingTask()` /
+`renderIconPixmap()`，就在已销毁的互斥量上取址崩溃。
+
+后果不是"多一个崩溃"，而是**判据不可见**：CI 记录的是 SIGSEGV 而不是那条断言消息，
+十来个测试因此根本没法定位。改成 `std::_Exit(EXIT_FAILURE)`（跳过析构即可，`std::cerr`
+是 unit-buffered，消息不会丢）后，同一批用例立刻变成老老实实的失败退出码 + 首行断言。
+
+结论：**测试的失败路径必须无副作用**。否则"崩溃"这个信号会被大量误报淹没。
+
+### C.8 `QApplication::widgetAt()` 在 Wayland 与 Qt5 offscreen 上没有答案
+
+`pointerHoverPositionWithin()` 用 `widgetAt(全局点)` 做"是不是被别的窗口盖住了"的命中测试，
+拿不到就一律拒绝。但 Wayland 客户端**根本无法查询全局指针**，Qt5 的 offscreen 插件同样返回空，
+于是这两个平台上"悬停展开菜单"从来没生效过（`translation_page_tests` 的
+`trigger reveals actions` 就是这么红了一整天）。
+
+修法：只有平台**确实指出**了一个不属于接收者的控件时才拒绝；没有答案时，事件本身携带的
+位置就是唯一证据，而它已经通过了矩形与可见子树检查。这条同时修好了 UOS/Wayland 上的产品行为，
+不只是测试。
