@@ -1139,7 +1139,13 @@ bool ScreenshotOverlayWindow::forwardCanvasInputEvent(QEvent* event) {
         pointerPosition = snowPointerPos(mouse);
         pointerButtons = mouse->buttons();
     }
-    const QPointF position = m_canvas->mapFrom(this, pointerPosition.toPoint());
+    // Qt 5 only offers the integer mapFrom() overload here, and rounding the
+    // pointer before the canvas sees it collapses the sub-pixel strip along the
+    // last display column and row. Map the rounded point and add the fractional
+    // remainder back, which is exact for the axis-aligned offsets a child has.
+    const QPoint roundedPointerPosition = pointerPosition.toPoint();
+    const QPointF position = QPointF(m_canvas->mapFrom(this, roundedPointerPosition)) +
+                             (pointerPosition - QPointF(roundedPointerPosition));
     const bool continuingGesture =
         event->type() == QEvent::MouseButtonRelease || event->type() == QEvent::TabletRelease ||
         ((event->type() == QEvent::MouseMove || event->type() == QEvent::TabletMove) &&
@@ -1208,11 +1214,17 @@ bool ScreenshotOverlayWindow::forwardCanvasInputEvent(QEvent* event) {
                                                mouse->source());
 #endif
     }
+    // The reconstructed events above take no timestamp argument (only the tablet
+    // constructor does, and it stamps the device's own), so copy the original
+    // one in explicitly. Without this the canvas sees a fresh event whose
+    // timestamp is zero, which breaks the gesture metadata the sink forwards.
+    // Qt 6 lifted the setter onto QEvent; on Qt 5 it lives on QInputEvent, which
+    // is what every type above derives from.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
-    // QEvent::setTimestamp arrived in Qt 6; on Qt 5 the remapped event keeps the
-    // timestamp its constructor path stamped, which is why the forwarding gate
-    // reads the original event's timestamp rather than this copy's.
     mapped->setTimestamp(event->timestamp());
+#else
+    static_cast<QInputEvent*>(mapped.get())
+        ->setTimestamp(static_cast<const QInputEvent*>(event)->timestamp());
 #endif
     // sendEvent marks the remapped event synthetic. Preserve its actual origin
     // for the startup gate, scoped to this exact event rather than nested input.
