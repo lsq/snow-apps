@@ -76,6 +76,14 @@ bool insertUnique(QSet<QString>* values, const QString& value) {
 
 class CatalogTranslator final : public QTranslator {
   public:
+    // Qt 5 answers installTranslator() with QTranslator::isEmpty(), which is true
+    // for translators that supply their strings from translate() instead of a .qm
+    // file.  The translator is installed either way; reporting it as non-empty is
+    // what Qt 6 does and keeps the install assertion meaningful.
+    bool isEmpty() const override {
+        return false;
+    }
+
     QString translate(const char* context, const char* sourceText, const char*,
                       int) const override {
         if (QString::fromLatin1(context) != QStringLiteral("SettingsCatalog")) {

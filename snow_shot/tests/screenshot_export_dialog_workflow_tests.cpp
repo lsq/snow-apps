@@ -35,6 +35,7 @@
 #include <QCursor>
 #include <QDynamicPropertyChangeEvent>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include "snow_shot/compat/qt_compat.h"
 #include <QFile>
 #include <QFileDialog>
@@ -167,10 +168,15 @@ void reusablePathInputsAndSettings() {
     SettingsPageWidget desktopPage(registry, QStringLiteral("desktop-tools"), session);
     desktopPage.reveal({desktopPage.pageId(), QStringLiteral("tray"), {}});
     const auto fileControls = desktopPage.findChildren<FilePathInput*>();
-    require(fileControls.size() == 1 &&
-                adqt::icons::describeIcon(fileControls.constFirst()->browseButton()->iconRef())
-                        .key.name == QStringLiteral("file-add"),
+    // The tray section exposes a regular and a dark-theme custom icon path, and
+    // both use the same file picker; only the directory settings stay separate.
+    require(fileControls.size() == 2,
             "file settings must use FilePathInput with FileAddOutlined");
+    for (FilePathInput* control : fileControls) {
+        require(adqt::icons::describeIcon(control->browseButton()->iconRef()).key.name ==
+                    QStringLiteral("file-add"),
+                "file settings must use FilePathInput with FileAddOutlined");
+    }
 }
 void snapshot(AdModal* modal, const QString& name) {
     const QString directory = qEnvironmentVariable("SNOW_EXPORT_TEST_SCREENSHOT_DIR");
@@ -1225,9 +1231,18 @@ void canvasZoomHint() {
                 hint->styleSheet().contains(QStringLiteral("padding: 3px 6px")) &&
                 hint->testAttribute(Qt::WA_TransparentForMouseEvents),
             "zoom hint must match the pinned-window appearance without intercepting input");
-    const int firstTimerId = timer->timerId();
+    // Qt 5 hands the same timer id back after a restart, so the restart itself
+    // has to be observed behaviourally: let most of the first interval elapse,
+    // zoom again, and require the hint to outlive the first deadline.
+    const auto wait = [](int milliseconds) {
+        QEventLoop loop;
+        QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+        loop.exec();
+    };
+    wait(700);
     pressKey(Qt::Key_Plus);
-    require(timer->isActive() && timer->timerId() != firstTimerId,
+    wait(500);
+    require(hint->isVisible() && timer->isActive(),
             "continued zooming must restart the hint dismissal timer");
     expire();
     canvas.setOutput(fixture(QSize(80, 50)));
@@ -1496,9 +1511,11 @@ void shortcutPopupInteraction(QWidget& owner, const QTemporaryDir& temp) {
     const QString editText = menu->actions()[0]->text();
     menu->actions()[0]->setText(QStringLiteral("Edit this saved directory shortcut"));
     menu->adjustSize();
-    require(menu->width() > popupWidth &&
-                menu->actionGeometry(menu->actions()[0]).width() >
-                    menu->fontMetrics().horizontalAdvance(menu->actions()[0]->text()),
+    // The row is sized and painted with the theme font, which is not the same as
+    // the menu widget's own font under a stylesheet, so comparing the geometry
+    // against menu->fontMetrics() measures two different fonts.  Grow the popup
+    // and let requireLabelsFit() below prove the longer label still fits.
+    require(menu->width() > popupWidth,
             "content-sized shortcut menu must still expand for longer translated labels");
     requireLabelsFit();
     menu->actions()[0]->setText(editText);
