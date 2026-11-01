@@ -682,8 +682,8 @@ qsizetype removeIf(QHash<Key, Value>& container, Predicate predicate)
 namespace detail
 {
 // Calls `functor` with no arguments, discarding the signal's payload. Kept as a
-// separate template so that the call is *dependent* on the deduced argument pack:
-// see the note at the call site in snowConnectSingleShot().
+// separate template so that the call is *dependent* on the deduced template
+// arguments: see the note at the call site in snowConnectSingleShot().
 template <typename Functor, typename... Args>
 void invokeDiscardingArguments(Functor& functor, Args&&...)
 {
@@ -722,7 +722,8 @@ QMetaObject::Connection snowConnectSingleShot(Sender sender, Signal signal, Cont
             // rejects at the call itself.
             //
             // The discarded branch must call a *dependent* function: a plain
-            // `functor()` there is independent of the lambda's deduced pack, and
+            // `functor()` there is independent of the lambda's deduced
+            // arguments, and
             // MSVC diagnoses it eagerly even in a discarded if-constexpr branch
             // ("function declaration must be available because none of the
             // arguments depends on the template parameters", C3889) - which is
