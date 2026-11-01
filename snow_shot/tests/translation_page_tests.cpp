@@ -32,6 +32,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QScreen>
 #include <QCloseEvent>
 #include <QCursor>
 #include <QDir>
@@ -373,7 +374,14 @@ void screenshotSettingsGeometry() {
         auto* body = modal->contentWidget();
         const int expectedHeight = body->hasHeightForWidth() ? body->heightForWidth(body->width())
                                                              : body->sizeHint().height();
-        require(qAbs(body->height() - expectedHeight) <= 1,
+        // A screen shorter than the whole form (the offscreen platform reports 800x600)
+        // cannot show it: AdModal stops at the centering margin and the body is clipped
+        // instead of padded. Only the padding direction is a regression.
+        const QRect usable =
+            body->window()->screen()->availableGeometry().adjusted(16, 16, -16, -16);
+        const bool clampedToScreen = body->window()->height() >= usable.height();
+        require(qAbs(body->height() - expectedHeight) <= 1 ||
+                    (clampedToScreen && body->height() < expectedHeight),
                 "screenshot settings body fits its content without vertical blank space");
         const auto labels = body->findChildren<QLabel*>(QStringLiteral("ad-form-item-label"));
         require(labels.size() == 6, "screenshot settings has six form labels");
