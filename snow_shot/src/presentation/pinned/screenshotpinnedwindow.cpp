@@ -1208,9 +1208,18 @@ ScreenshotPinnedWindow::ScreenshotPinnedWindow(QWidget* parent)
 
     auto& themeManager = adqt::theme::ThemeManager::instance();
     connect(&themeManager, &adqt::theme::ThemeManager::themeChanged, this, [this]() {
+        // A pinned window can outlive its canvas (destroyCanvas() leaves m_canvas
+        // null until the content is materialised again), and themeChanged is
+        // delivered to every window: repaint only what still exists, and do no
+        // work at all once this window is being torn down.
+        if (m_destroying) {
+            return;
+        }
         refreshColorSwatch();
         updateThumbnailPresentation();
-        m_canvas->update();
+        if (m_canvas != nullptr) {
+            m_canvas->update();
+        }
         update();
     });
     connect(qGuiApp, &QGuiApplication::screenRemoved, this, [this](QScreen*) {

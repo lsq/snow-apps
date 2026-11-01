@@ -10581,8 +10581,14 @@ void pinnedHideToTopIntegration(bool native) {
     enter();
     controller.animation().resume();
     controller.animation().setCurrentTime(250);
-    require(!window.isVisible() && !window.isActiveWindow(),
-            "hidden pin must release visibility and activation");
+    require(!window.isVisible(), "hidden pin must release visibility");
+    // Activation is a platform fact. The offscreen plugin tracks QApplication's
+    // active window but never delivers a deactivation when that window is hidden,
+    // so the check only makes sense where a real window manager answers. The
+    // native variant (-platform windows) covers it.
+    if (native) {
+        require(!window.isActiveWindow(), "hidden pin must release activation");
+    }
 #ifdef Q_OS_WIN
     std::optional<CursorPositionRestorer> cursorRestorer;
     if (native) {
