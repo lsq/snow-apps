@@ -13,6 +13,7 @@
 #include "widgets/input_text_edit.h"
 #include "widgets/select.h"
 
+#include <QAbstractButton>
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
@@ -371,8 +372,6 @@ void pageActionsAndLifecycle() {
     auto* controller = page->findChild<TranslationPageController*>();
     auto* result =
         page->findChild<adqt::widgets::AdTextEdit*>(QStringLiteral("translationResultText"));
-    auto* copy = page->findChild<QAction*>(QStringLiteral("translationCopy"));
-    auto* copyClose = page->findChild<QAction*>(QStringLiteral("translationCopyAndClose"));
     waitUntil([&] { return server.streams.size() == 1; }, "standalone starts translation");
     server.delta(0, QStringLiteral("translated result"));
     waitUntil([&] { return result->toPlainText() == QStringLiteral("translated result"); },
@@ -385,6 +384,18 @@ void pageActionsAndLifecycle() {
                     QDir(snapshotDirectory).filePath(QStringLiteral("standalone-translation.png"))),
                 "save standalone page rendering");
     }
+    // The actions live in a menu that ActionPopupMenu builds on the first open, so the
+    // floating trigger has to be clicked before they exist -- and only after a result has
+    // arrived, because a disabled action ignores trigger().
+    auto* actionTrigger =
+        page->findChild<QAbstractButton*>(QStringLiteral("translationActions"));
+    require(actionTrigger != nullptr, "standalone exposes the translation action trigger");
+    actionTrigger->click();
+    flushEvents();
+    auto* copy = page->findChild<QAction*>(QStringLiteral("translationCopy"));
+    auto* copyClose = page->findChild<QAction*>(QStringLiteral("translationCopyAndClose"));
+    require(copy != nullptr && copyClose != nullptr && copy->isEnabled(),
+            "opening the translation action trigger creates enabled copy actions");
     copy->trigger();
     require(qApp->clipboard()->text() == QStringLiteral("translated result") && modal->isOpen(),
             "copy preserves standalone window");
@@ -410,6 +421,14 @@ void pageActionsAndLifecycle() {
     LanguageManager::instance().languageChanged(QStringLiteral("en_US"), QLocale(QLocale::English));
     flushEvents();
     QPointer<TranslationPageWidget> oldPage = page;
+    // Copying dismissed the popup, and the popup owns the actions it created, so the
+    // copy-and-close action has to come from a freshly opened menu -- the earlier
+    // pointer is dangling by now.
+    actionTrigger->click();
+    flushEvents();
+    copyClose = page->findChild<QAction*>(QStringLiteral("translationCopyAndClose"));
+    require(copyClose != nullptr && copyClose->isEnabled(),
+            "reopening the translation action trigger creates a usable copy-and-close action");
     copyClose->trigger();
     require(!modal->isOpen() && existingMain.isVisible() && !controller->active(),
             "copy-and-close closes only standalone and deactivates streaming page");

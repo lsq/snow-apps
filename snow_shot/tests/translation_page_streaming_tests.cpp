@@ -7,6 +7,7 @@
 #include "widgets/input_text_edit.h"
 #include "widgets/scroll_area.h"
 
+#include <QAbstractButton>
 #include <QApplication>
 #include <QAction>
 #include <QClipboard>
@@ -129,14 +130,19 @@ void pendingOutputLifecycle() {
     page.setSourceText(QStringLiteral("first request"));
     waitUntil([&] { return server.streams.size() == 1; }, "start lifecycle stream");
 
+    // The result-pane copy button is used here rather than the floating trigger's menu
+    // action: the menu is built on the first open, and this page is never shown, so the
+    // actions inside it do not exist yet. Both entry points run the same copyResult().
+    auto* resultCopy = page.findChild<QAbstractButton*>(QStringLiteral("translationResultCopy"));
+    require(resultCopy != nullptr, "the page exposes the result copy button");
     // Observe the stream synchronously, before the next scheduled paint can run.
     bool checkedPending = false;
     auto connection =
         QObject::connect(controller, &TranslationPageController::resultChanged, &page, [&] {
             require(result->toPlainText().isEmpty(), "tokens are buffered before rendering");
-            require(page.findChild<QAction*>(QStringLiteral("translationCopy"))->isEnabled(),
+            require(resultCopy->isEnabled(),
                     "the first buffered token immediately enables copy");
-            page.findChild<QAction*>(QStringLiteral("translationCopy"))->trigger();
+            resultCopy->click();
             require(QApplication::clipboard()->text() == controller->resultText(),
                     "copy includes received tokens before the next visual update");
             checkedPending = true;
