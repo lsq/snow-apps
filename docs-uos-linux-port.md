@@ -6603,3 +6603,44 @@ setActiveAction -> setCurrentAction -> popupAction -> internalDelayedPopup
 这条声明会落进最内层封闭命名空间，在 `adqt::locale` 或匿名命名空间里都会解析到不存在的符号
 （MSVC 直接把修饰名打出来了）。
 
+
+### C.4 崩溃栈现在能给出「源文件:行号」
+
+`SymFromAddr` 在本机仍然静默失败，但 **`SymGetLineFromAddr64` 能用**：Qt 官方 debug-symbols
+的 PDB 和我们自己的 PDB 都带行信息。`stack-any-dump.py` 已经接上，于是每条栈帧长这样：
+
+```
+  [0118] 0x00007FFFBD365496  QAction::activate+0x36  (qaction.cpp:1149)
+  [0198] 0x00007FF66841B1F1  pageActionsAndLifecycle+0x1DA1  (standalone_translation_tests.cpp:425)
+```
+
+代价是十几行 ctypes：`IMAGEHLP_LINE64` 的 `SizeOfStruct` 必须先填好，否则 dbghelp 同样
+「返回 FALSE 且 GetLastError 为 0」。有了行号，"崩在 QAction::trigger 里" 就直接落到
+**测试的第 425 行**，不必再猜是哪个调用点。
+
+### C.5 弹出菜单持有自己的动作：懒创建 + 隐藏即销毁
+
+`ActionPopupMenu` 的工厂每次 open 都造一个新菜单，菜单 `setDeleteOnHide()`，动作是菜单的
+子对象。于是：
+
+- 菜单没打开过 ⇒ `findChild<QAction*>("translationCopy")` 返回 **nullptr**；
+- 菜单一旦 hide（复制、点别处、模态关闭）⇒ 动作**随之销毁**，先前抓到的 `QAction*`
+  变成悬垂指针。
+
+Qt5 上这两种情况都是 `QAction::activate` 里 `QPointer<QObject>` → `getAndRef` 的 C0000005
+（`qaction.cpp:1149`）。`standalone_translation_tests` 两个用例都踩在这里，修法：先
+`click()` 浮动按钮把菜单打开、再取动作；复制之后菜单已销毁，取"复制并关闭"必须**重新
+打开一次**。`snow-shot-translation-page-streaming-tests` 更彻底——页面从未 show，菜单
+根本打不开，只能改用结果区常驻的复制按钮（同一个 `copyResult()`）。
+
+### C.6 `AdPopover::takeContentWidget()` 曾经"拿不走"
+
+弹层视图（`PopoverContentView`）自己也存了一份 widget 指针，并且**每次 rebuild 都会把它
+re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边那份，`setParent(nullptr)`
+之后又立刻 `syncPopupContent()` ⇒ 视图把 widget 原样塞回弹层。调用方以为拿走了，其实还挂在
+弹层里（`AdPopconfirm` 只好再 `setParent(nullptr)` 一遍兜底）。
+
+调用方是析构函数时这会致命：`~AdPopconfirmPrivate` 取回面板随即 `delete`，而 Qt5 的
+`QWidget::setParent → QWidgetPrivate::reparentFocusWidgets` 在"半销毁"的 widget 上崩掉
+（`snow-shot-translation-settings-tests` 的 C0000005，地址 `Qt5Widgetsd+0x52F9A`）。
+修法是先让视图忘掉它（`popupContentView_->setContentWidget(nullptr)`），再摘走。
