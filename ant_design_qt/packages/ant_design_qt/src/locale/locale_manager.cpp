@@ -1,9 +1,32 @@
 #include "locale_manager.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QTranslator>
+
+// qt_add_translations() embeds the .qm catalogs as a resource named after the
+// target. rcc emits a translation unit whose only exports are
+// qInitResources_ant_design_qt_translations/qCleanupResources_..., driven by a
+// static `initializer dummy` inside it. That never runs when the catalog lives
+// in a static library: no other member of libant_design_qt.a references the
+// resource object, so the linker drops it outright. catalogPathFor() then lists
+// an empty directory and refreshTranslator() quietly installs nothing -- the UI
+// falls back to English with no error anywhere. Naming the entry point is what
+// keeps the member alive, and the call is idempotent.
+//
+// Q_INIT_RESOURCE has to sit in a function at **global** scope, and that
+// function must have a name: the macro only declares
+// `extern int qInitResources_...()` inside the body, and the declaration lands
+// in the innermost enclosing namespace. Inside namespace adqt::locale it looks
+// for `adqt::locale::qInitResources_...`; inside an anonymous namespace the
+// name is mangled with the anonymous-namespace suffix. Neither exists in rcc's
+// output, so the only form that links is a plain function in the global
+// namespace.
+void snowEnsureAdqtTranslationResources() {
+  Q_INIT_RESOURCE(ant_design_qt_translations);
+}
 
 namespace adqt::locale {
 
@@ -77,9 +100,14 @@ void LocaleManager::applyTo(QApplication& app) {
 }
 
 QString LocaleManager::catalogPathFor(const QLocale& locale) const {
+  snowEnsureAdqtTranslationResources();
   const QDir directory(QString::fromLatin1(kCatalogPrefix));
   const QStringList names =
       directory.entryList({QStringLiteral("ant_design_qt_*.qm")}, QDir::Files, QDir::Name);
+  if (names.isEmpty()) {
+    qWarning("adqt: no translation catalog is embedded under %s", kCatalogPrefix);
+    return {};
+  }
   const QString filePrefix = QString::fromLatin1(kCatalogFilePrefix);
   const QString fileSuffix = QString::fromLatin1(kCatalogFileSuffix);
 

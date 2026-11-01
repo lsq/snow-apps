@@ -3788,7 +3788,7 @@ int main(int argc, char** argv) {
                 adminCatalog.item({QStringLiteral("general"), QStringLiteral("system-general"),
                                    QStringLiteral("system.restart-as-administrator")}) == nullptr,
             "macOS must omit Windows-only administrator controls");
-#else
+#elif defined(Q_OS_WIN)
     bool foundAdministratorControls = false;
     for (const auto& page : adminCatalog.pages()) {
         for (const auto& section : page.sections) {
@@ -3808,6 +3808,15 @@ int main(int argc, char** argv) {
     }
     require(foundAdministratorControls,
             "administrator controls must exist in the settings catalog");
+#else
+    // launchAsAdministratorItem() and restartAsAdministratorItem() live behind
+    // Q_OS_WIN in the catalog, so a POSIX build has no elevation controls at all.
+    require(adminCatalog.item({QStringLiteral("general"), QStringLiteral("system-general"),
+                               QStringLiteral("system.launch-as-administrator")}) == nullptr &&
+                adminCatalog.item({QStringLiteral("general"),
+                                   QStringLiteral("system-general"),
+                                   QStringLiteral("system.restart-as-administrator")}) == nullptr,
+            "Linux must omit Windows-only administrator controls");
 #endif
     builtInCatalogIsCompleteAndValid();
     trayDarkIconSettingsHaveIndependentContracts();
