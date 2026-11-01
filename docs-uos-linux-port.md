@@ -6548,3 +6548,58 @@ xvfb-run -a --server-args="-screen 0 1280x1024x24" \
   ctest --test-dir build/snow-shot-linux-x64-release --output-on-failure
 ```
 
+
+## 附录 C：Qt 5 崩溃栈的符号化与三条已确认的框架差异
+
+Linux 上 13 个 `***Exception: SegFault` 之前一直是黑箱：Qt 5 开源版不带 PDB，
+`Qt5Widgetsd.dll+0x52F9A` 只能被解析到最近的导出符号，于是十几条完全不同的栈都被印成
+`QStyleAnimation::frameRate+0x…`。这个假名字让排查卡了两轮。
+
+**装一次 PDB 就解决了。** Qt 官方把 debug info 单独发布在
+`download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt5_5152/` 下，
+`qt.qt5.5152.debug_info.win64_msvc2019_64/…qtbase…-debug-symbols.7z` 是 90 MB，
+解压到 `.tools/qt5-symbols/extracted/5.15.2/msvc2019_64/bin` 后把该目录挂到
+`_NT_SYMBOL_PATH`（必须在 `SymInitialize` 之前），
+`.workbuddy/qt5-port/stack-any-dump.py` 就会自动使用它。同一个 dump 的同一段栈，
+符号化前后相差一个数量级的信息量。
+
+### C.1 `QAbstractButton` 在 emit 之后还会写自己的私有状态
+
+Qt 5 的 `QAbstractButtonPrivate::click()` 在发完 pressed/released/toggled/clicked **之后**
+还会调 `refresh()`；`QAbstractButton::mouseReleaseEvent()` 在 `click()` 返回后还会写
+`d->repeat`。因此「观察者在按钮的信号里 `delete` 按钮」在 Qt 5 上必然访问已释放的
+`QAbstractButtonPrivate`。Qt 6 删掉了这两条语句，所以只有 Qt 5 的跑到这里崩。
+
+`adqt-value-widget-lifetime-tests` 的两个鼠标/键盘用例因此按 `QT_VERSION >= 6` 门控。
+同一文件里 `AdTagGroup::applySelectionToTags()` 仍然可以在 Qt 5 上安全地允许观察者删除整组：
+把状态改动放进 `QSignalBlocker`，再用 `QMetaObject::invokeMethod` 补发 `toggled`，
+此时按钮已经没有任何后续工作，删除就是安全的。
+
+### C.2 `QMenu` 的 sloppy state 无法吸收「先重开、后销毁旧 shell」
+
+`AdContextMenu` 的懒加载子菜单在每次重开时换一个新 shell。若旧 shell 的 `deleteLater()`
+等到**下一轮 popup 之后**才执行，Qt 5 会在 `setActiveAction()` 里沿着 sloppy state 把那个已销毁
+的菜单再 `QMenu::popup()` 一次：
+
+```
+setActiveAction -> setCurrentAction -> popupAction -> internalDelayedPopup
+  -> QMenuSloppyState::setSubMenuPopup -> QMenu::popup -> QMenuPrivate::get -> d_func   [fault]
+```
+
+把销毁放在每轮末尾（`persistentParentsRestoreLazySubmenus(true)`）就正常，所以这是顺序问题。
+产品侧试过两种修法都不改变故障地址：在 `LazySubMenu::installShell()` 里同步删掉旧 shell、
+以及销毁前先 `setParent(nullptr)` —— 失效的引用在 Qt 的 sloppy state 里，不在控件自己手上。
+该顺序用例按 `QT_VERSION >= 6` 门控，并在 stderr 上明说。
+
+### C.3 静态库里的 Qt 资源必须有人引用才存在
+
+`rcc` 生成的翻译单元只有 `qInitResources_<target>_translations` 及其清理函数，
+注册动作依赖文件内的静态初始化器；而静态库成员只有在有符号被引用时才会被链接器拉进来。
+`libant_design_qt.a` 里没有任何东西引用它，于是整个 `.qm` 资源被丢弃，
+`catalogPathFor()` 列出一个空目录，`refreshTranslator()` 静默不装任何 translator，
+界面全量退回英文且不报错。修法是从 `catalogPathFor()` 里显式点名该入口。
+
+注意 `Q_INIT_RESOURCE` 必须写在**全局命名空间**的具名函数里：宏展开只是 `extern int qInitResources_x()`，
+这条声明会落进最内层封闭命名空间，在 `adqt::locale` 或匿名命名空间里都会解析到不存在的符号
+（MSVC 直接把修饰名打出来了）。
+
