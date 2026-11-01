@@ -1290,10 +1290,21 @@ void SliderTest::rightToLeftSelectionDragFollowsValueDirection() {
   applyTestStyle(&slider);
   renderSlider(&slider);
 
+  // Drive the gesture with explicit events, like the other drag cases here:
+  // QTest::mouseMove() synthesises the move with a cleared button state, which
+  // a widget that is not tracking the mouse never receives, so the drag would
+  // silently never reach the slider.
   const QPoint trackCenter(134, slider.height() / 2);
-  QTest::mousePress(&slider, Qt::LeftButton, Qt::NoModifier, trackCenter);
-  QTest::mouseMove(&slider, trackCenter - QPoint(17, 0));
-  QTest::mouseRelease(&slider, Qt::LeftButton, Qt::NoModifier, trackCenter - QPoint(17, 0));
+  const QPoint dragTarget = trackCenter - QPoint(17, 0);
+  QMouseEvent press(QEvent::MouseButtonPress, trackCenter, trackCenter, Qt::LeftButton,
+                    Qt::LeftButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &press);
+  QMouseEvent move(QEvent::MouseMove, dragTarget, dragTarget, Qt::NoButton, Qt::LeftButton,
+                   Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &move);
+  QMouseEvent release(QEvent::MouseButtonRelease, dragTarget, dragTarget, Qt::LeftButton,
+                      Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &release);
 
   QCOMPARE(slider.lowerValue(), 30.0);
   QCOMPARE(slider.upperValue(), 50.0);
@@ -1301,6 +1312,11 @@ void SliderTest::rightToLeftSelectionDragFollowsValueDirection() {
 
 void SliderTest::tinyControlClampsHandleInset() {
   AdSlider slider;
+  // A 24 px wide top-level widget is widened by the platform window manager
+  // (Windows clamps the minimum window width), which would make the clamped
+  // inset untestable.  Off-screen rendering keeps the requested size while
+  // still driving the same paint path.
+  slider.setAttribute(Qt::WA_DontShowOnScreen);
   slider.resize(24, 40);
   applyTestStyle(&slider);
   slider.setValue(slider.minimum());
@@ -1323,9 +1339,15 @@ void SliderTest::tinyControlClampsHandleInset() {
 
   const QPoint minimumHandleCenter(slider.width() / 2, slider.height() / 2);
   const QPoint maximumDragTarget(slider.width() - 1, slider.height() / 2);
-  QTest::mousePress(&slider, Qt::LeftButton, Qt::NoModifier, minimumHandleCenter);
-  QTest::mouseMove(&slider, maximumDragTarget);
-  QTest::mouseRelease(&slider, Qt::LeftButton, Qt::NoModifier, maximumDragTarget);
+  QMouseEvent press(QEvent::MouseButtonPress, minimumHandleCenter, minimumHandleCenter,
+                    Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &press);
+  QMouseEvent move(QEvent::MouseMove, maximumDragTarget, maximumDragTarget, Qt::NoButton,
+                   Qt::LeftButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &move);
+  QMouseEvent release(QEvent::MouseButtonRelease, maximumDragTarget, maximumDragTarget,
+                      Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+  QCoreApplication::sendEvent(&slider, &release);
   QCOMPARE(slider.value(), slider.maximum());
   hideTestHandles(&slider);
   image = renderSlider(&slider);
