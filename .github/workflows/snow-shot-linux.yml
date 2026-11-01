@@ -483,6 +483,17 @@ jobs:
           path: build/${{ matrix.preset }}/snow-shot-*.AppImage
           if-no-files-found: error
 
+      # `scripts/test-recording-build-profiles.py` resolves feature graphs with
+      # `cargo metadata --offline`, which is the point: the gate must prove the
+      # checked-in lockfile is complete, not that the runner has network. The
+      # compatibility workspace under snow-crates/, however, pulls crates that the
+      # snow_rust_ffi graph never compiles (accessibility-sys, cc), so the build
+      # above leaves them out of the registry cache and three subtests die with
+      # "failed to download ... but --offline was specified". Fetch that manifest
+      # explicitly so the tests keep their --offline guarantees.
+      - name: Fetch standalone recording crates
+        run: cargo fetch --locked --manifest-path snow-crates/Cargo.toml
+
       # Tests come **after** the package, in the same tree, for two reasons: the
       # release presets configure with `SNOW_APPS_BUILD_TESTS=OFF`, so a ctest up
       # front finds zero tests and `--no-tests=error` turns that into a failure
@@ -508,3 +519,21 @@ jobs:
           # be cheaper but is a different plugin, and the port is an X11 port.
           xvfb-run -a --server-args="-screen 0 1280x1024x24" \
             ctest --test-dir build/${{ matrix.preset }} --output-on-failure --no-tests=error
+
+      # A crash is the one failure the ctest log cannot explain: the harness dies
+      # before it prints anything, so the report is `***Exception: SegFault` and
+      # the failing line stays unknown. Replay the failed entries under gdb and
+      # keep only the runs that really crashed. gdb reads the .symtab that GCC
+      # leaves in a Release binary, so the port's own frames come out named even
+      # though the job builds without `-g`.
+      #
+      # Diagnostic only: it must never turn a green run red, and it must not
+      # replace the ctest report as the source of truth.
+      - name: Crash backtraces
+        if: failure()
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y --no-install-recommends gdb
+          xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+            python3 scripts/linux-crash-backtraces.py \
+              --build-dir build/${{ matrix.preset }}
