@@ -55,8 +55,16 @@ class GuardedImage final {
         }
         uchar* pixels = m_allocation + accessible - bytes;
         std::memcpy(pixels, source.constBits(), bytes);
-        m_image = QImage(static_cast<const uchar*>(pixels), source.width(), source.height(),
-                         source.bytesPerLine(), source.format());
+        // Build the view over the writable pointer, not the `const uchar*` overload. Qt 5 marks
+        // the latter as read-only storage and then detaches it unconditionally inside
+        // setColorTable() (even for an empty table) and setDevicePixelRatio() (even for an
+        // unchanged ratio), which silently clones the pixels onto ordinary heap storage and
+        // throws away the guard page this class exists for. setColorSpace() is the only metadata
+        // setter that does not detach. Losing ro_data costs nothing here: callers compare the
+        // image against `source` after the operation under test, so any write inside the guarded
+        // allocation is still reported as corruption.
+        m_image = QImage(pixels, source.width(), source.height(), source.bytesPerLine(),
+                         source.format());
         m_image.setColorTable(source.colorTable());
         m_image.setColorSpace(source.colorSpace());
         m_image.setDevicePixelRatio(source.devicePixelRatio());
