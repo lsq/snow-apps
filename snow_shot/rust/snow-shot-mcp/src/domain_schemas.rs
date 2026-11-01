@@ -76,6 +76,7 @@ limited_integer!(DelaySeconds, 0, 10);
 limited_integer!(HistoryPageSize, 1, 200);
 limited_integer!(TrailDuration, 100, 2000);
 limited_integer!(KeyboardSize, 32, 128);
+limited_integer!(HighlightRadius, 8, 128);
 limited_integer!(Percentage, 0, 100);
 limited_integer!(ArtifactChunkSize, 1, 262144);
 limited_integer!(ExportQuality, 1, 100);
@@ -347,7 +348,8 @@ input!(RecordingOptions {
     show_cursor: Option<bool>, show_keyboard: Option<bool>, mouse_highlight: Option<bool>,
     record_mouse_clicks: Option<bool>, mouse_trail_duration_ms: Option<TrailDuration>, keyboard_size: Option<KeyboardSize>,
     keyboard_background: Option<String>, keyboard_foreground: Option<String>, mouse_trail: Option<String>,
-    mouse_click: Option<String>, mouse_highlight_color: Option<String>
+    mouse_click: Option<String>, mouse_highlight_color: Option<String>,
+    mouse_highlight_radius: Option<HighlightRadius>
 });
 input!(RecordingStart { region: [f64; 4], options: Option<RecordingOptions>, idempotency_key: Option<String> });
 choices!(RecordingAction {

@@ -136,6 +136,7 @@
         "MultiSelect",
         "Slider",
         "Color",
+        "ColorPalette",
         "Radio",
         "FilePath",
         "DirectoryPath",
@@ -172,6 +173,7 @@
         "StorageStatus",
         "DrawingToolbarEditor",
         "ScreenshotToolbarEditor",
+        "RecordingToolbarEditor",
         "PinnedToolbarEditor",
         "TrayMenuOptions",
         "FloatingToolbarEditor",
@@ -209,6 +211,8 @@
         "SelectedSpotlight",
         "DefaultRectangleEraser",
         "DefaultBrushEraser",
+        "DefaultDistance",
+        "SelectedDistance",
         "DefaultAngle",
         "SelectedAngle",
         "DefaultMagnifier",
@@ -240,6 +244,7 @@
         "AutoFilter": "AutoFilter",
         "RectangleEraser": "RectangleEraser",
         "BrushEraser": "BrushEraser",
+        "Distance": "Distance",
         "Magnifier": "Magnifier",
         "SpeechBubble": "SpeechBubble"
       }
@@ -274,7 +279,7 @@
         "keyboard_foreground",
         "mouse_trail",
         "mouse_click",
-        "mouse_highlight_color",
+        "mouse_highlight_color", "mouse_highlight_radius",
         "post_processing",
         "post_processing_effect",
         "progress_bar_color"
