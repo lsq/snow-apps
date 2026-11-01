@@ -6405,3 +6405,146 @@ nm -D squashfs-root/usr/lib/libQt6Core.so.6 | grep isoc23 || echo "OK: no __isoc
 ---
 
 *本文档基于对 `snow-apps` 仓库（`SNOW_SHOT_VERSION 1.2.8`）的静态分析编写，所有文件路径与行号均对应当前快照。*
+
+## 附录 B：arm64 单元测试失败基线（run 41264674368，31c214fe）
+
+x64 作业在 180 分钟上限处被取消，arm64 作业跑完全部 832 个用例：**699 通过 / 133 失败**，
+整个 Unit tests 步骤（重新配置 + 编译 289 个测试 TU + ctest）在 arm64 上装得进 180 分钟。
+也就是说 Linux 上「编译 + 打包 + 跑测试」全链路已经打通，
+剩下的全是断言差异，而且几乎没有成簇的单一根因——133 个失败落在 108 个互不相同的首行断言上。
+
+| 失败数 | 首条非噪声输出 | 代表用例 |
+| --- | --- | --- |
+| 11 | `(无输出)` | adqt-context-menu-lifecycle-tests, adqt-value-widget-lifetime-tests, snow-shot-custom-ai-models-tests … |
+| 3 | `OCR cached/direct mismatch: mode=0 dpr=1.5 pixels=12 max_channel_difference=67 first=88,69 cached=#f` | snow-shot-screenshot-canvas-renderer-tests, snow-shot-ocr-canvas-renderer-tests, snow-shot-ocr-line-box-rendering-tests |
+| 3 | `Traceback (most recent call last):` | snow-shot-mcp-capabilities-tests, snow-shot-mcp-fixture-tests, snow-shot-mcp-application-fixture-tests |
+| 2 | `font database changes must invalidate worker layouts on their thread` | snow-canvas-text-draft-tests, snow-canvas-text-render-cache-tests |
+| 2 | `offscreen serial scenes must preserve the incoming font and disabled text antialiasing for custom ba` | snow-canvas-filter-render-tests, snow-canvas-serial-number-font-tests |
+| 2 | `hovering More opens the shared widget menu` | snow-shot-pinned-window-management-page-tests, snow-shot-collage-pinned-selection-tests |
+| 2 | `managed decoding must preserve the reader's fallback scaling result` | snow-shot-main-window-skin-codec-tests, snow-shot-managed-image-reader-tests |
+| 2 | `initial selector refresh failed` | snow-shot-window-element-api-tests, snow-shot-selector-phased-tests |
+| 2 | `pinned text bounds match the exact client extent at the current DPR and zoom` | snow-shot-pinned-text-wrap-tests, snow-shot-pinned-text-wrap-fractional-tests |
+| 2 | `quick save must create the configured directory and use format/name settings` | snow-shot-export-artifact-tests, snow-shot-quick-save-export-tests |
+| 2 | `Move options must group region actions at the far left, before capture actions and hide` | snow-shot-move-region-toolbar-tests, snow-shot-screenshot-tool-palette-tests |
+| 2 | `the screenshot move tool must retain Edit selection and its screenshot shortcut` | snow-shot-screenshot-action-shortcut-display-tests, snow-shot-screenshot-toolbar-i18n-tests |
+| 2 | `screenshot settings body fits its content without vertical blank space` | snow-shot-translation-page-tests, snow-shot-screenshot-translation-settings-dialog-tests |
+| 2 | `an OCR stitching source accounts for its raster before joining the import queue` | snow-shot-pinned-stitching-snapshot-tests, snow-shot-pinned-multi-selection-tests |
+| 1 | `Menu must publish populated rows before returning from setModel` | adqt-widget-diagnostics-tests |
+| 1 | `unpadded text and link buttons must fit their content` | adqt-button-lifetime-tests |
+| 1 | `********* Start testing of ButtonSignalLifetimeTests *********` | adqt-button-signal-lifetime-tests |
+| 1 | `********* Start testing of SelectTest *********` | adqt-select-tests |
+| 1 | `simulated primary display must use 150 percent scaling` | adqt-popup-hover-geometry-tests |
+| 1 | `the bundled Ant Design catalog should translate pagination text` | adqt-locale-manager-tests |
+| 1 | `tablet samples preserve subpixel positions, time and normalized actual pressure` | snow-canvas-tablet-input-tests |
+| 1 | `gradient opacity must increase from 16% to 42% and multiply every alpha` | snow-canvas-magnifier-render-tests |
+| 1 | `sibling filters cannot consume or propagate each other's changed output` | snow-canvas-magnifier-interaction-tests |
+| 1 | `bounded color conversion must exactly match Qt` | snow-canvas-image-tests |
+| 1 | `serial rendering restores the caller's font state` | snow-canvas-serial-number-render-tests |
+| 1 | `sparse dpr=1.25 rotation=-0.47 zoom=1.37 selected=1` | snow-canvas-text-overlay-tests |
+| 1 | `long image tiles must remain on one page and preserve current image order` | snow-shot-collage-pdf-export-tests |
+| 1 | `captured pixels own their admission without copying or losing image metadata` | snow-shot-collage-document-tests |
+| 1 | `Storage initialization: 2 ms` | snow-shot-collage-window-tests |
+| 1 | `Storage initialization: 1 ms` | snow-shot-collage-live-pinned-import-tests |
+| 1 | `an empty-state drop must request import and clear the highlight` | snow-shot-image-split-editor-tests |
+| 1 | `Image split filename policy tests passed` | snow-shot-image-split-export-tests |
+| 1 | `guarded image must retain the protected source storage` | snow-shot-image-split-preview-tests |
+| 1 | `incremental overlays must match fresh renders across DPI, languages, and clipped rulers` | snow-shot-image-split-canvas-tests |
+| 1 | `FFF` | snow-shot-recording-build-profiles-tests |
+| 1 | `libpng error: PNG output write failed.` | snow-shot-image-codec-backend-smoke-tests |
+| 1 | `parallel requests start` | snow-shot-text-translation-tests |
+| 1 | `a silent Retina warp must deliver fractional hover movement to the child` | snow-shot-physical-cursor-tests |
+| 1 | `an existing link error retranslates and preserves its destination` | snow-shot-about-page-tests |
+| 1 | `administrator controls must exist in the settings catalog` | snow-shot-settings-catalog-tests |
+| 1 | `Checking interface.theme-primary-color` | snow-shot-settings-color-commit-tests |
+| 1 | `System default is visibly selected when the application font is unset` | snow-shot-settings-select-tests |
+| 1 | `related buttons size to their text without built-in padding` | snow-shot-settings-navigation-tests |
+| 1 | `only settings that actually differ must announce changes` | snow-shot-configuration-archive-tests |
+| 1 | `selector service geometry refresh failed` | snow-shot-selector-lifecycle-tests |
+| 1 | `a disabled tray must not replace the last balloon with an update notice` | snow-shot-system-tray-controller-tests |
+| 1 | `disabled legacy tray notifications cannot open files` | snow-shot-recording-export-tray-tests |
+| 1 | `a new recording session must save the new physical position` | snow-shot-shortcut-key-row-tests |
+| 1 | `direct capture lost the full desktop snapshot` | snow-shot-direct-capture-native-tests |
+| 1 | `cursor patch must map through image pixels into desktop canvas points` | snow-shot-screenshot-cursor-tests |
+| 1 | `crop guide must cross the selection center at one physical pixel` | snow-shot-scrolling-overlay-tests |
+| 1 | `blit-format mean_ms argb32=1.12802 rgb32=0.0925955` | snow-shot-overlay-frame-presenter-tests |
+| 1 | `each independent file window must retain its centered geometry` | snow-shot-file-pin-presentation-tests |
+| 1 | `stationary controls must apply opacity immediately` | snow-shot-pinned-click-through-tests |
+| 1 | `restored always-on-top fixture needs the pinned menu` | snow-shot-pinned-always-on-top-tests |
+| 1 | `thumbnail transitions must preserve the current mouse anchor` | snow-shot-pinned-double-click-tests |
+| 1 | `Text wheel input should increase pinned font size` | snow-shot-pinned-toolbar-parity-tests |
+| 1 | `close merged translation pin` | snow-shot-pinned-translation-tests |
+| 1 | `an advertised Save As format could not be encoded` | snow-shot-screenshot-image-file-service-tests |
+| 1 | `the first presentation should consume the prepared shell` | snow-shot-pinned-window-pool-tests |
+| 1 | `persisted recognition must keep the Qt 6.11 binary format` | snow-shot-pinned-restored-ocr-tests |
+| 1 | `recognition setup must restore the overlay without changing or re-requesting OCR` | snow-shot-pinned-early-ocr-snapshot-tests |
+| 1 | `existing pinned toolbar must reload its custom layout` | snow-shot-pinned-toolbar-layout-tests |
+| 1 | `the flip or half-turn must persist without changing the window size` | snow-shot-pinned-transformed-ocr-tests |
+| 1 | `enabling window buttons must immediately reveal both on a hovered pin` | snow-shot-pinned-pointer-presence-offscreen-tests |
+| 1 | `final encoding dimensions differ from form` | snow-shot-export-dialog-workflow-tests |
+| 1 | `bounded codec preview encoding failed` | snow-shot-export-dialog-pipeline-tests |
+| 1 | `the save dialog must remain above its toolbar after a queued raise` | snow-shot-export-dialog-placement-tests |
+| 1 | `upload succeeds once` | snow-shot-cloud-upload-tests |
+| 1 | `changing cloud destination synchronizes selection without recreating rows` | snow-shot-cloud-upload-settings-tests |
+| 1 | `invalid Excel workbook package` | snow-shot-pinned-recognition-save-tests |
+| 1 | `failed file copy leaves clipboard untouched` | snow-shot-pinned-shared-image-export-tests |
+| 1 | `automatic save failure preserves the successful pin` | snow-shot-pin-execution-autosave-tests |
+| 1 | `quick-save annotation was not committed` | snow-shot-pinned-quick-save-tests |
+| 1 | `legacy default saves must upgrade to an idempotent quick-save stack` | snow-shot-quick-save-toolbar-tests |
+| 1 | `Arrow should remain a direct button when Line is unavailable` | snow-shot-screenshot-tool-palette-distance-tests |
+| 1 | `Table and QR recognition should occupy one main toolbar slot` | snow-shot-screenshot-action-toolbar-layout-tests |
+| 1 | `default drawing group should expose all configured tools` | snow-shot-screenshot-shortcut-tooltip-tests |
+| 1 | `storage compatibility coverage should follow the engine's current template version` | snow-shot-styled-template-storage-tests |
+| 1 | `closing a ratio popup must restore the previous screenshot keyboard owner` | snow-shot-screenshot-selection-toolbar-hover-tests |
+| 1 | `save test template` | snow-shot-global-canvas-tests |
+| 1 | `clicking active Select must return to Export Settings` | snow-shot-screen-recording-shortcut-tests |
+| 1 | `repeating a recording tool shortcut must return to Export Settings like a button click` | snow-shot-recording-history-shortcut-tests |
+| 1 | `initial capture must exclude the interface` | snow-shot-scrolling-capture-settings-tests |
+| 1 | `toolbar movement must forward the event's global coordinates` | snow-shot-toolbar-guide-hover-tests |
+| 1 | `the screenshot window should live-reload every independent action slot` | snow-shot-floating-toolbar-action-layout-tests |
+| 1 | `screenshot reset should be enabled without selection` | snow-shot-screenshot-selection-reset-command-tests |
+| 1 | `unavailable native exclusion keeps drawing popup hidden; capture-on shows it` | snow-shot-recording-capture-exclusion-tests |
+| 1 | `OCR integration must execute the selected runtime` | snow-shot-ocr-cpu-recognition-service-tests |
+| 1 | `the managed OCR runtime must be staged` | snow-shot-ocr-managed-runtime-tests |
+| 1 | `save failed: avif: output_failed` | snow-shot-mcp-document-tests |
+| 1 | `local API test server timed out waiting for a request` | snow-shot-api-client-tests |
+| 1 | `all resize handles must preserve aspect ratio` | snow-shot-pinned-controlled-interaction-tests |
+| 1 | `passive publication correction must restore geometry without discarding pixels` | snow-shot-pinned-passive-publication-tests |
+| 1 | `live pin pixels, alpha and source mapping must match sRGB conversion` | snow-shot-pinned-color-space-tests |
+| 1 | `pinned drawing editor must serialize and save the selected canvas elements` | snow-shot-pinned-template-dialog-tests |
+| 1 | `failed export must not start native drag` | snow-shot-pinned-drag-export-tests |
+| 1 | `rapid source switching rejects a stale preview before retirement completes` | snow-shot-recording-audio-controller-tests |
+| 1 | `dragging out of a hover-opened editor preserves gain editing` | snow-shot-recording-audio-gain-popover-tests |
+| 1 | `a narrow desktop needs overflow without allocating its menu` | snow-shot-floating-toolbar-menu-lifecycle-tests |
+| 1 | `the mixed-DPI fixture screen is missing` | snow-shot-original-image-preview-mixed-dpi-tests |
+| 1 | `hidden recording hotkeys retain their Export Settings toggle` | snow-shot-recording-hidden-tool-shortcut-tests |
+| 1 | `........FF....` | snow-shot-release-optimization-policy-tests |
+| 1 | `empty document fast path changed projection, alpha, or color metadata` | snow-shot-print-export-snapshot-tests |
+| 1 | `published backing store clears stale shadow pixels on every toggle` | snow-shot-pinned-show-shadow-tests |
+| 1 | `dense tiled union and hole dpr=1.000000 transform=1: maximum premultiplied channel difference=34 fir` | snow-shot-region-shadow-renderer-tests |
+| 1 | `tile mismatch dpr=1.3 at 642,408 actual=#8594a7 expected=#8292a6` | snow-shot-selection-background-preview-tests |
+| 1 | `batched pixels must retain source samples and exact coverage` | snow-shot-layout-compaction-tests |
+
+按性质归类的处理方向：
+
+1. **平台门控（最高性价比）**：`administrator controls must exist in the settings catalog` 一类断言在
+   Linux 上没有对应页面，属于用例缺 `Q_OS_WIN` 条件，不是产品缺陷。
+2. **字度量**：`unpadded text and link buttons must fit their content`、`pinned text bounds`、
+   `Move options must group…` 都建立在具体字体度量上，Qt 5.15.13 arm64 的 fallback 字体与 Qt6 不同，
+   需要在测试里固定测试字体，而不是照抄 Qt6 的像素期望。
+3. **色彩/像素管线**：`OCR cached/direct mismatch`、`bounded color conversion must exactly match Qt`、
+   `tile mismatch dpr=1.3`、`maximum premultiplied channel difference=34` 是 Qt5 色彩转换与dithering
+   的实现差异，需要按「两条产品路径互相一致」而不是「与 Qt6 像素相等」来断言。
+4. **屏幕夹具**：`the mixed-DPI fixture screen is missing`、`simulated primary display must use 150 percent scaling`
+   依赖 QPA 提供的多屏/DPR 能力，offscreen 插件给不出，需要在 Linux 上换夹具实现。
+5. **崩溃（13 个 SEGFAULT + 1 个 SIGBUS）**：故障地址集中在 Qt 5 内部同一条 abort 路径上，见 `.workbuddy/qt5-port/dump-on-crash.ps1`
+   与本机复现记录；`adqt-button-signal-lifetime-tests` 在 arm64 上是 SIGBUS（signal 7）而非 AV，需单独看。
+
+复跑方法（任一 Linux 机器）：
+
+```bash
+cmake --preset snow-shot-linux-x64-release -DSNOW_APPS_BUILD_TESTS=ON
+cmake --build --preset snow-shot-linux-x64-release --parallel 4 -- -k 0
+xvfb-run -a --server-args="-screen 0 1280x1024x24" \
+  ctest --test-dir build/snow-shot-linux-x64-release --output-on-failure
+```
+

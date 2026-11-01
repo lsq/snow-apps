@@ -230,7 +230,16 @@ jobs:
     # The pinned dependency build grew by OpenCV 4.12 (dnn + the bundled
     # protobuf + the contrib module), which is the single most expensive
     # library in that step; the project's own build is on top of it.
-    timeout-minutes: 180
+    #
+    # Run 41264674368 measured the split: 51 minutes for dependencies, configure,
+    # build, .deb, AppImage and their uploads, then Unit tests still running when
+    # the 180-minute cap killed the job at 05:22. That step reconfigures the same
+    # tree with SNOW_APPS_BUILD_TESTS=ON, so it pays a second full build of
+    # snow_shot plus 289 test executables and their links -- the arm64 job, on a
+    # faster runner, finished the identical work inside the old cap. 330 keeps the
+    # dependency/package phase untouched and still leaves 30 minutes of margin
+    # under the 360-minute platform ceiling.
+    timeout-minutes: 330
     steps:
       # `cmake/SnowOcrToolchain.cmake` fails the configure outright when the OCR
       # submodule is absent, and the helper is built from its sources, so this
