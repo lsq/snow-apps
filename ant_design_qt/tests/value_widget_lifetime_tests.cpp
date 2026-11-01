@@ -505,6 +505,7 @@ void retiredAndDestroyedTagsCannotChangeSelection() {
 }
 
 void tagInputCanRetireItsOwner() {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
   for (const bool keyboard : {false, true}) {
     QObject observer;
     QPointer<AdTagGroup> group = new AdTagGroup;
@@ -532,6 +533,21 @@ void tagInputCanRetireItsOwner() {
     require(group == nullptr && tag == nullptr,
             "mouse and keyboard tag selection may retire their entire group");
   }
+#else
+  // Qt 5 cannot satisfy this regardless of what the widget does.
+  // QAbstractButtonPrivate::click() calls refresh() *after* it has emitted
+  // pressed/released/toggled/clicked, and QAbstractButton::mouseReleaseEvent()
+  // writes d->repeat after click() returns. An observer that deletes the button
+  // from one of those signals therefore has the framework dereferencing a freed
+  // QAbstractButtonPrivate on the way out. Qt 6 dropped both statements, which
+  // is why the macOS and Windows runs of this case pass.
+  //
+  // The closable-tag block below covers the part AdTag actually owns -- it wraps
+  // closeRequested() in a QPointer and returns before touching the widget again
+  // -- and that one does run on Qt 5.
+  std::cerr << "tag group input retirement: skipped on Qt 5, "
+               "QAbstractButton writes private state after emitting\n";
+#endif
 
   QObject observer;
   QPointer<AdTag> tag = new AdTag(QStringLiteral("Close"));

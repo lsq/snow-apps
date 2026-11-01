@@ -8,6 +8,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QScopeGuard>
+#include <QSignalBlocker>
 
 #include <tuple>
 #include <utility>
@@ -361,7 +362,26 @@ bool AdTagGroup::applySelectionToTags() {
       continue;
     }
     const QVariant value = tag->property("adqt.tag-group.value");
-    tag->setChecked(selectedValues_.contains(value));
+    const bool wantChecked = selectedValues_.contains(value);
+    if (tag->isChecked() == wantChecked) {
+      continue;
+    }
+    // The tag has to survive the notification. QAbstractButton::setChecked()
+    // emits toggled() as its last statement, but an observer is allowed to
+    // delete the whole group from there, and deleting the group deletes this
+    // tag -- a QWidget still in the middle of its own state change. Qt 5 then
+    // walks the destroyed widget on the way out (the crash lands in
+    // QAccessible::updateAccessibility) and the next statement of the caller
+    // touches freed memory. Finish the state change quietly and publish the
+    // signal afterwards, when nothing else needs the tag.
+    {
+      const QSignalBlocker blocker(tag.data());
+      tag->setChecked(wantChecked);
+    }
+    if (!guard) {
+      return false;
+    }
+    QMetaObject::invokeMethod(tag, "toggled", Qt::DirectConnection, Q_ARG(bool, wantChecked));
     if (!guard) {
       return false;
     }
