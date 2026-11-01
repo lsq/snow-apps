@@ -6668,3 +6668,30 @@ re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边�
 修法：只有平台**确实指出**了一个不属于接收者的控件时才拒绝；没有答案时，事件本身携带的
 位置就是唯一证据，而它已经通过了矩形与可见子树检查。这条同时修好了 UOS/Wayland 上的产品行为，
 不只是测试。
+
+### C.9 主题信号打到一个"没有画布"的窗口上（`nullptr->update()`）
+
+`snow-shot-pinned-hide-to-top-tests` 的崩溃花了一轮才定性：RIP 落在
+`QWidget::rect()`（`qwidget.h:860`），访问地址是 **0x28**——也就是从空指针上读成员。
+栈上明明是 `m_canvas->update()` 的那一行，但真正为空的不是 `this`：
+
+`destroyCanvas()` 会把 `m_canvas` 置空（内容重新物化前一直是空），而钉图窗口仍然挂在
+`themeChanged` 上，主题一变就被要求重绘，于是 `nullptr->update()` 在 `QWidget::update()`
+里读 `d->data->crect` 直接崩。**空指针上调非虚成员函数是 UB，这条和 Qt5 无关，Qt6 一样会崩**，
+只是要"主题在窗口没有画布的那一刻正好变了"才触发。
+
+两个教训：
+1. 报错行号（PDB 行信息）能指到 `update()` 这一句，但**指不到"哪个指针是空的"**。
+   `dump-on-crash.ps1` 现在会把 `ExceptionInformation[1]` 一起打出来——`0x28` 这种小地址
+   一看就知道是空成员访问，而不是野指针。
+2. 主题/字体这类全局信号的回调里，成员指针一律先判空。`m_destroying` 这种"正在销毁"标志
+   也要放在最前面返回，否则析构途中的重入会把半销毁的控件再画一遍。
+
+### C.10 offscreen 平台不会在隐藏时撤销激活
+
+`window.hide()` 之后 `isVisible()` 立刻为假，但 offscreen 插件**不会**像真实窗口管理器那样
+再发一次"取消激活"，所以 `isActiveWindow()` 仍是真。这类断言在 offscreen 上不是产品缺陷，
+而是平台根本没有这个答案（和 C.8 的 `widgetAt()` 同一类）。
+
+判据写法：可见性要求保留给所有平台，激活要求只留给真实平台（本仓库里就是
+`--hide-to-top-native-only -platform windows` 那个变体）。
