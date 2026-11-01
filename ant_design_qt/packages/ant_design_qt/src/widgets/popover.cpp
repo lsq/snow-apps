@@ -823,6 +823,12 @@ QWidget* AdPopover::takeTitleWidget() {
     return nullptr;
   }
   const QPointer<AdPopover> lifetime(this);
+  // The view keeps its own pointer to the title widget and re-parents it into its
+  // title host on every rebuild, so the pointer has to go before the widget leaves
+  // our hierarchy -- see takeContentWidget() for the details.
+  if (popupContentView_) {
+    popupContentView_->setTitleWidget(nullptr);
+  }
   QPointer<QWidget> widget = takeOwnedWidget(titleWidget_, titleWidgetDestroyedConnection_);
   if (!lifetime || !notifyPropertyChange(&AdPopover::titleWidgetChanged, nullptr)) {
     return widget;
@@ -918,6 +924,16 @@ QWidget* AdPopover::takeContentWidget() {
     return nullptr;
   }
   const QPointer<AdPopover> lifetime(this);
+  // Handing the widget back has to start with the popup view forgetting it. Every
+  // rebuild re-parents the widget the view holds into its own content host, so a
+  // pointer left behind drags the widget straight back into the popup the next time
+  // syncPopupContent() runs -- including the run inside this very function, which
+  // would then re-parent a widget that the caller is about to delete. AdPopconfirm
+  // does exactly that from its destructor, and on Qt 5 the re-parent faults inside
+  // QWidgetPrivate::reparentFocusWidgets().
+  if (popupContentView_) {
+    popupContentView_->setContentWidget(nullptr);
+  }
   QPointer<QWidget> widget = takeOwnedWidget(contentWidget_, contentWidgetDestroyedConnection_);
   if (!lifetime) {
     return widget;
