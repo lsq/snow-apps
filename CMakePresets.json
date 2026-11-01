@@ -690,6 +690,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SNOW_APPS_BUILD_TESTS": "OFF",
+        "SNOW_APPS_ENABLE_RELEASE_SIZE_OPTIMIZATION": "ON",
         "SNOW_IMAGE_PROFILE": "full"
       }
     },
@@ -710,6 +711,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "SNOW_APPS_BUILD_TESTS": "OFF",
+        "SNOW_APPS_ENABLE_RELEASE_SIZE_OPTIMIZATION": "ON",
         "SNOW_IMAGE_PROFILE": "full"
       }
     }
