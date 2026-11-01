@@ -10,7 +10,7 @@ namespace {
 void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 ScreenshotOcrLine box(const QString& text, qreal x, qreal y, qreal width, qreal height = 20) {
@@ -29,7 +29,7 @@ void expect(const QVector<ScreenshotOcrLine>& input, const QStringList& expected
         actual.push_back(line.text);
     if (actual != expected) {
         std::cerr << name << ": " << actual.join(QStringLiteral(" | ")).toStdString() << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 } // namespace

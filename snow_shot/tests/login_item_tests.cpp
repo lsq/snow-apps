@@ -10,7 +10,7 @@ namespace {
 void require(bool ok, const char* message) {
     if (!ok) {
         std::cerr << message << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 struct Fixture {

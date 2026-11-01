@@ -21,7 +21,7 @@ namespace shortcuts = snow_shot::shortcuts;
 void require(bool condition, const char* message) {
     if (!condition) {
         std::cerr << message << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 

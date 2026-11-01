@@ -13,7 +13,7 @@ namespace {
 void require(bool ok, const char* message) {
     if (!ok) {
         std::cerr << message << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 
@@ -21,7 +21,7 @@ void requireEqual(const QString& actual, const QString& expected, const char* me
     if (actual != expected) {
         std::cerr << message << "\n  actual:   " << actual.toStdString()
                   << "\n  expected: " << expected.toStdString() << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 
@@ -29,7 +29,7 @@ void requireEqual(const QStringList& actual, const QStringList& expected, const 
     if (actual != expected) {
         std::cerr << message << "\n  actual:   " << actual.join(u'|').toStdString()
                   << "\n  expected: " << expected.join(u'|').toStdString() << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 

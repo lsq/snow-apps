@@ -26,7 +26,7 @@ QHash<QObject*, int> publishedRows;
 void require(bool condition, const char* message) {
   if (!condition) {
     std::fprintf(stderr, "%s\n", message);
-    std::exit(EXIT_FAILURE);
+    std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
   }
 }
 

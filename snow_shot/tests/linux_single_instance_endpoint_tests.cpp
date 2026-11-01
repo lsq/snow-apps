@@ -15,7 +15,7 @@ const QString kBaseName = QStringLiteral("snow-shot-0123456789abcdef01234567");
 void require(bool ok, const char* message) {
     if (!ok) {
         std::cerr << message << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 
@@ -23,7 +23,7 @@ void requireEqual(const QString& actual, const QString& expected, const char* me
     if (actual != expected) {
         std::cerr << message << "\n  actual:   " << actual.toStdString()
                   << "\n  expected: " << expected.toStdString() << '\n';
-        std::exit(EXIT_FAILURE);
+        std::_Exit(EXIT_FAILURE);  // skip static teardown: it runs with widgets still alive
     }
 }
 
