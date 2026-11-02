@@ -3212,8 +3212,15 @@ void groupedDrawingOptionsShowShortcutTooltips() {
         distanceShortcut.isEmpty()
             ? QStringLiteral("Distance annotation")
             : QStringLiteral("Distance annotation (%1)").arg(distanceShortcut);
+    const QString angleShortcut = snow_shot::shortcuts::formatShortcutListDisplayText(
+        settings.shortcuts(QStringLiteral("angle")));
+    const QString angleTooltip =
+        angleShortcut.isEmpty()
+            ? QStringLiteral("Angle annotation")
+            : QStringLiteral("Angle annotation (%1)").arg(angleShortcut);
     const QMap<QString, QString> expectedTooltips{
         {QStringLiteral("arrow"), QStringLiteral("Arrow (2)")},
+        {QStringLiteral("angle"), angleTooltip},
         {QStringLiteral("distance"), distanceTooltip},
         {QStringLiteral("line"), QStringLiteral("Line (%1)")
                                      .arg(snow_shot::shortcuts::formatShortcutListDisplayText(
@@ -3235,10 +3242,28 @@ void groupedDrawingOptionsShowShortcutTooltips() {
         require(popover->isVisible(), "drawing group hover menu should be visible");
 
         const auto buttons = popover->contentWidget()->findChildren<adqt::widgets::AdButton*>();
-        const qsizetype expectedCount =
-            QString::fromLatin1(triggerName) == QStringLiteral("screenshotArrowLineButton") ? 3 : 2;
-        require(buttons.size() == expectedCount,
-                "default drawing group should expose all configured tools");
+        // Compare membership, not order: the group legitimately exposes one entry
+        // per configured tool and the popover is free to order them by its own
+        // presentation rules. Angle joined the Arrow/Line group, so the contract is
+        // "whatever the layout puts in this position, all of it is reachable".
+        QStringList expectedIds =
+            QString::fromLatin1(triggerName) == QStringLiteral("screenshotArrowLineButton")
+                ? QStringList{QStringLiteral("angle"), QStringLiteral("distance"),
+                              QStringLiteral("line"), QStringLiteral("arrow")}
+                : QStringList{QStringLiteral("highlighter"), QStringLiteral("spotlight")};
+        QStringList exposedIds;
+        for (const auto* button : buttons)
+            exposedIds.push_back(button->property("screenshotToolbarItemId").toString());
+        QStringList sortedExpected = expectedIds;
+        sortedExpected.sort();
+        QStringList sortedExposed = exposedIds;
+        sortedExposed.sort();
+        require(sortedExposed == sortedExpected,
+                qPrintable(QStringLiteral("default drawing group should expose all configured "
+                                          "tools: trigger=%1 expected=[%2] exposed=[%3]")
+                               .arg(QString::fromLatin1(triggerName),
+                                    sortedExpected.join(QStringLiteral(", ")),
+                                    sortedExposed.join(QStringLiteral(", ")))));
         for (auto* button : buttons) {
             const QString expected =
                 expectedTooltips.value(button->property("screenshotToolbarItemId").toString());
@@ -4549,14 +4574,27 @@ void tableQrPopoverSharesOneEntryAndRemembersTheSelectedMode() {
     options.showTableTool = true;
     options.showQrTool = true;
     options.enableStyleToolbar = false;
+    // Speech bubble defaults to enabled, so the drawing layout appends it as its
+    // own main-toolbar slot and the "one slot" premise below would not hold.
+    options.showSpeechBubbleTool = false;
     options.actionToolsLayout = snow_shot::storage::ScreenshotToolbarLayout{
         {{QStringLiteral("barcode-recognition"), QStringLiteral("table-recognition")}}, {}};
 
     ScreenshotToolPalette palette(options);
     palette.contentSizeHint();
     const QList<adqt::widgets::AdButton*> mainButtons = mainToolbarButtons(palette);
+    QStringList mainSlots;
+    for (const auto* button : mainButtons) {
+        const QStringList items =
+            button->property("screenshotToolbarPositionItems").toStringList();
+        mainSlots.push_back(QStringLiteral("{") + items.join(QStringLiteral(", ")) +
+                            QStringLiteral("}"));
+    }
     require(mainButtons.size() == 1,
-            "Table and QR recognition should occupy one main toolbar slot");
+            qPrintable(QStringLiteral("Table and QR recognition should occupy one main toolbar "
+                                      "slot: count=%1 slots=[%2]")
+                           .arg(mainButtons.size())
+                           .arg(mainSlots.join(QStringLiteral(" ")))));
     auto* trigger =
         palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotTableQrButton"));
     require(trigger == mainButtons.front() &&
@@ -5889,29 +5927,61 @@ void quickSaveStacksAndLayoutMigration() {
     const QString print = QStringLiteral("print");
     const QString quick = QStringLiteral("quick-save");
     const QString save = QStringLiteral("save-as-file");
+    // The save stack is not the trailing position any more: the default layout
+    // keeps the separator/cancel/copy group after it, so locate the stack by
+    // content instead of by position. Pinning it to constLast() is what let this
+    // contract rot unnoticed once the product appended the trailing group.
+    const auto saveStackIndex = [](const ScreenshotToolbarLayout& layout) {
+        for (qsizetype index = 0; index < layout.positions.size(); ++index) {
+            if (layout.positions.at(index).contains(QStringLiteral("save-as-file")))
+                return index;
+        }
+        return qsizetype(-1);
+    };
+    const auto describeStack = [&](const ScreenshotToolbarLayout& layout) {
+        const qsizetype index = saveStackIndex(layout);
+        return index < 0 ? QStringLiteral("<no save-as-file position>")
+                         : layout.positions.at(index).join(QStringLiteral(", "));
+    };
     auto legacy = normalizedLayout(ScreenshotToolbarLayout{}, kind);
+    require(saveStackIndex(legacy) >= 0,
+            qPrintable(QStringLiteral("the legacy fixture must keep a save stack to migrate: "
+                                      "positions=%1")
+                           .arg(legacy.positions.size())));
     for (auto& position : legacy.positions)
         position.removeAll(quick);
     const auto upgraded = normalizedLayout(legacy, kind);
-    require(upgraded.positions.constLast() == QStringList{cloud, print, quick, save} &&
+    require(saveStackIndex(upgraded) >= 0 &&
+                upgraded.positions.at(saveStackIndex(upgraded)) ==
+                    QStringList{cloud, print, quick, save} &&
                 normalizedLayout(upgraded, kind) == upgraded,
-            "legacy default saves must upgrade to an idempotent quick-save stack");
+            qPrintable(QStringLiteral("legacy default saves must upgrade to an idempotent "
+                                      "quick-save stack: stack=[%1] idempotent=%2")
+                           .arg(describeStack(upgraded))
+                           .arg(normalizedLayout(upgraded, kind) == upgraded ? 1 : 0)));
     auto custom = legacy;
-    custom.positions.last().prepend(QStringLiteral("record-screen"));
+    custom.positions[saveStackIndex(custom)].prepend(QStringLiteral("record-screen"));
     custom.positions.removeAt(1);
-    require(normalizedLayout(custom, kind).positions.constLast() ==
-                QStringList{QStringLiteral("record-screen"), cloud, print, quick, save},
-            "custom save placements must gain Quick save immediately above Save");
-    legacy.positions.removeLast();
+    const auto customUpgraded = normalizedLayout(custom, kind);
+    require(saveStackIndex(customUpgraded) >= 0 &&
+                customUpgraded.positions.at(saveStackIndex(customUpgraded)) ==
+                    QStringList{QStringLiteral("record-screen"), cloud, print, quick, save},
+            qPrintable(QStringLiteral("custom save placements must gain Quick save immediately "
+                                      "above Save: stack=[%1]")
+                           .arg(describeStack(customUpgraded))));
+    legacy.positions.removeAt(saveStackIndex(legacy));
     legacy.hidden = QStringList{save};
     const auto hidden = normalizedLayout(legacy, kind);
     require(hidden.hidden.contains(save) && hidden.hidden.contains(quick),
             "hiding Save in a legacy layout must also hide the new Quick save action");
     auto explicitLayout = upgraded;
-    explicitLayout.positions.last().removeAll(quick);
+    explicitLayout.positions[saveStackIndex(explicitLayout)].removeAll(quick);
     explicitLayout.hidden = QStringList{quick};
     require(normalizedLayout(explicitLayout, kind) == explicitLayout,
-            "an explicitly hidden Quick save must stay hidden");
+            qPrintable(QStringLiteral("an explicitly hidden Quick save must stay hidden: "
+                                      "stack=[%1] hidden=[%2]")
+                           .arg(describeStack(explicitLayout),
+                                explicitLayout.hidden.join(QStringLiteral(", ")))));
     explicitLayout.hidden.clear();
     explicitLayout.positions.prepend({quick});
     require(normalizedLayout(explicitLayout, kind) == explicitLayout,
@@ -6209,6 +6279,7 @@ void arrowAndLineRemainDirectWhenConfiguredIndividually() {
     arrowOptions.showDistanceTool = false;
     arrowOptions.showAngleTool = false;
     arrowOptions.enableStyleToolbar = false;
+    arrowOptions.showSpeechBubbleTool = false;
     ScreenshotToolPalette arrowPalette(arrowOptions);
     const QList<adqt::widgets::AdButton*> arrowButtons = mainToolbarButtons(arrowPalette);
     require(arrowButtons.size() == 1 &&
@@ -6224,6 +6295,7 @@ void arrowAndLineRemainDirectWhenConfiguredIndividually() {
     lineOptions.showAngleTool = false;
     lineOptions.showLineTool = true;
     lineOptions.enableStyleToolbar = false;
+    lineOptions.showSpeechBubbleTool = false;
     ScreenshotToolPalette linePalette(lineOptions);
     const QList<adqt::widgets::AdButton*> lineButtons = mainToolbarButtons(linePalette);
     require(lineButtons.size() == 1 &&
@@ -10246,6 +10318,10 @@ void watermarkAndTextToolsUseStandardSpacing() {
     options.showShapeTool = false;
     options.showWatermarkTool = true;
     options.showTextTool = true;
+    // The default layout puts the Speech bubble group between Text and Watermark,
+    // so the text->watermark adjacency this contract measures only exists when
+    // that group is switched off.
+    options.showSpeechBubbleTool = false;
     ScreenshotToolPalette palette(options);
 
     QWidget* watermark = controlWithTooltip(palette, "Watermark");
@@ -10263,7 +10339,12 @@ void watermarkAndTextToolsUseStandardSpacing() {
         textIndex >= 0 && textIndex + 1 < layout->count() ? layout->itemAt(textIndex + 1) : nullptr;
     require(watermarkIndex == textIndex + 2 && spacing != nullptr &&
                 spacing->spacerItem() != nullptr && spacing->sizeHint().width() == 8,
-            "Text should have 8px spacing before Watermark");
+            qPrintable(QStringLiteral("Text should have 8px spacing before Watermark: "
+                                      "text=%1 watermark=%2 count=%3 spacing=%4px")
+                           .arg(textIndex)
+                           .arg(watermarkIndex)
+                           .arg(layout->count())
+                           .arg(spacing != nullptr ? spacing->sizeHint().width() : -1)));
 }
 
 void watermarkControlsFollowCommittedStateAndUndo() {
@@ -13236,6 +13317,10 @@ void distanceSettingsExposeIndependentPropertiesAndHoverWheel() {
     hiddenOptions.showSelectTool = false;
     hiddenOptions.showArrowTool = false;
     hiddenOptions.showAngleTool = false;
+    // Speech bubble defaults to enabled and the drawing layout appends every
+    // remaining default group, so leaving it on adds a second toolbar button and
+    // breaks the "one configured position" premise of this fixture.
+    hiddenOptions.showSpeechBubbleTool = false;
     hiddenOptions.toolbarLayout = snow_shot::storage::ScreenshotToolbarLayout{
         {{QStringLiteral("shape")}}, {QStringLiteral("distance")}};
     ScreenshotToolPalette hiddenPalette(hiddenOptions);
@@ -13261,8 +13346,18 @@ void distanceSettingsExposeIndependentPropertiesAndHoverWheel() {
     hiddenPalette.setActiveTool(ScreenshotToolPalette::Tool::Shape);
     QCoreApplication::processEvents();
     const auto buttons = mainDrawingToolbarButtons(hiddenPalette);
+    QStringList configuredSlots;
+    for (const auto* button : buttons) {
+        const QStringList items =
+            button->property("screenshotToolbarPositionItems").toStringList();
+        configuredSlots.push_back(
+            QStringLiteral("{") + items.join(QStringLiteral(", ")) + QStringLiteral("}"));
+    }
     require(buttons.size() == 1 && distanceSlotIsVisible(),
-            "custom Distance groups should occupy one configured toolbar position");
+            qPrintable(QStringLiteral("custom Distance groups should occupy one configured "
+                                      "toolbar position: count=%1 slots=[%2]")
+                           .arg(buttons.size())
+                           .arg(configuredSlots.join(QStringLiteral(" ")))));
     auto* customTrigger = buttons.constFirst();
     materializeLazyPopover(customTrigger);
     auto* distanceOption =
@@ -15720,8 +15815,22 @@ void styleToolbarControlsDoNotEnterTabFocusChain() {
 
     const QList<adqt::widgets::AdRadio*> modeButtons =
         palette.findChildren<adqt::widgets::AdRadio*>();
-    require(modeButtons.size() == 21,
-            "style toolbars should expose the expected number of mode radios");
+    QStringList modeNames;
+    for (const auto* button : modeButtons)
+        modeNames.push_back(button->parentWidget() != nullptr
+                                ? button->parentWidget()->objectName() + QLatin1Char(':') +
+                                      button->text()
+                                : button->text());
+    // The count only guards the loop below against silently inspecting nothing, so it
+    // must track every mode group of the materialized families: shape 3, arrow 3,
+    // highlight 4, serial number 5, numeric serial number 5, filter 6, spotlight 3.
+    constexpr int expectedModeRadios = 3 + 3 + 4 + 5 + 5 + 6 + 3;
+    require(modeButtons.size() == expectedModeRadios,
+            qPrintable(QStringLiteral("style toolbars should expose the expected number of mode "
+                                      "radios: count=%1 expected=%2 names=[%3]")
+                           .arg(modeButtons.size())
+                           .arg(expectedModeRadios)
+                           .arg(modeNames.join(QStringLiteral(" | ")))));
     for (adqt::widgets::AdRadio* button : modeButtons) {
         require(button != nullptr && button->focusPolicy() == Qt::NoFocus,
                 "style toolbar radio buttons should not enter the Tab focus chain");
@@ -16508,13 +16617,23 @@ void repeatedToolsAndDifferentialStyleSynchronizationAreNoOps() {
     const quint64 beforeSelected = palette.propertyGroupRefreshCountForTests();
     state.source = SnowCanvasStyleToolbarSource::SelectedRectangle;
     palette.setStyleToolbarState(state);
-    require(palette.propertyGroupRefreshCountForTests() == beforeSelected + 7,
-            "a selected/default source transition should perform a full refresh");
+    const quint64 selectedDelta = palette.propertyGroupRefreshCountForTests() - beforeSelected;
+    // A selected/default source transition has to refresh every property group of
+    // the rectangle panel, so this count tracks the panel itself: it moved 7 -> 8
+    // when the panel gained a group. Keep the exact number instead of loosening
+    // the check, otherwise a partial refresh would silently pass.
+    require(selectedDelta == 8,
+            qPrintable(QStringLiteral("a selected/default source transition should perform a full "
+                                      "refresh: groups=%1")
+                           .arg(selectedDelta)));
     const quint64 beforeMixed = palette.propertyGroupRefreshCountForTests();
     state.shapeStyleMixed = SnowCanvasShapeStyleMixedStrokeWidth;
     palette.setStyleToolbarState(state);
-    require(palette.propertyGroupRefreshCountForTests() == beforeMixed + 1,
-            "a mixed-mask-only change should refresh its owning group");
+    const quint64 mixedDelta = palette.propertyGroupRefreshCountForTests() - beforeMixed;
+    require(mixedDelta == 1,
+            qPrintable(QStringLiteral("a mixed-mask-only change should refresh its owning group: "
+                                      "groups=%1")
+                           .arg(mixedDelta)));
 }
 
 void editorlessToolsRejectStaleStyleToolbarState() {
