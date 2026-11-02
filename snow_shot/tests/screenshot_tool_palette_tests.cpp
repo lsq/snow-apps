@@ -17662,6 +17662,11 @@ void strokeRenderingSelectionEditUsesHistoryAndRemembersOnlyItsProperty() {
 
 void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
     using namespace snow_shot;
+    // The engine version this storage side has to agree with. It is spelled out here on purpose:
+    // DRAW_TEMPLATE_SCHEMA_VERSION lives in Rust and normalizeDrawTemplates() caps at its own
+    // copy, so a bump on either side has to show up as a failure here rather than as stored
+    // templates quietly getting thrown away at load time.
+    constexpr int engineTemplateVersion = 7;
     const storage::DrawTemplateSettings settings;
     const auto original = settings.templates();
     const auto restore = qScopeGuard([&] { static_cast<void>(settings.setTemplates(original)); });
@@ -17712,7 +17717,7 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
         const QByteArray payload = source.serializeSelectedDrawTemplate();
         require(
             QJsonDocument::fromJson(payload).object().value(QStringLiteral("schemaVersion")) ==
-                QJsonValue(6),
+                QJsonValue(engineTemplateVersion),
             "storage compatibility coverage should follow the engine's current template version");
         const auto data = elementData(payload);
         require(
@@ -17792,7 +17797,7 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
         object.insert(QStringLiteral("schemaVersion"), version);
         return QJsonDocument(object).toJson(QJsonDocument::Compact);
     };
-    for (int version = 1; version <= 6; ++version) {
+    for (int version = 1; version <= engineTemplateVersion; ++version) {
         const auto payload = withVersion(version);
         require(
             settings.setTemplates({{QStringLiteral("  Compatible  "), payload}}) &&
@@ -17802,8 +17807,9 @@ void styledDrawTemplatesPersistNormalizeAndRemainInsertable() {
     }
     require(settings.setTemplates(templates),
             "restore actual styled templates before invalid edits");
-    for (const auto& version : {QJsonValue(), QJsonValue(-1), QJsonValue(0), QJsonValue(7),
-                                QJsonValue(1.5), QJsonValue(QStringLiteral("6"))}) {
+    for (const auto& version :
+         {QJsonValue(), QJsonValue(-1), QJsonValue(0), QJsonValue(engineTemplateVersion + 1),
+          QJsonValue(1.5), QJsonValue(QString::number(engineTemplateVersion))}) {
         const auto invalid = withVersion(version);
         require(!settings.setTemplates({templates.first(), {QStringLiteral("Invalid"), invalid}}) &&
                     settings.templates() == templates,
