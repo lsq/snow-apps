@@ -3596,12 +3596,28 @@ if(SNOW_SHOT_BUILD_TESTS)
         target_link_libraries(snow-shot-window-element-api-tests PRIVATE
             "-framework CoreGraphics" "-framework AppKit")
     endif()
-    add_test(NAME snow-shot-window-element-api-tests
-             COMMAND snow-shot-window-element-api-tests)
-    add_test(NAME snow-shot-selector-phased-tests
-             COMMAND snow-shot-window-element-api-tests --selector-only)
-    add_test(NAME snow-shot-selector-lifecycle-tests
-             COMMAND snow-shot-window-element-api-tests --selector-lifecycle-only)
+    # Native selector contracts. snow_ui_selector.h only models UIA, MSAA and
+    # Accessibility, and snow-ui-selector-c dispatches to none of the x11rb code
+    # that snow-ui-selector/src/linux.rs already contains, so
+    # ScreenshotSelectorServiceClient is the documented stub off Windows/macOS
+    # (see docs-uos-linux-port.md). Registering these three on Linux only asserts
+    # the stub: keep them where the backend exists, and keep the settings-only
+    # entry points below registered everywhere, since they do not touch it.
+    # Collect them in a variable rather than listing them again below, because
+    # set_tests_properties() on a test that was never added is a configure error.
+    set(_snow_shot_native_selector_tests)
+    if(WIN32 OR APPLE)
+        add_test(NAME snow-shot-window-element-api-tests
+                 COMMAND snow-shot-window-element-api-tests)
+        add_test(NAME snow-shot-selector-phased-tests
+                 COMMAND snow-shot-window-element-api-tests --selector-only)
+        add_test(NAME snow-shot-selector-lifecycle-tests
+                 COMMAND snow-shot-window-element-api-tests --selector-lifecycle-only)
+        set(_snow_shot_native_selector_tests
+            snow-shot-window-element-api-tests
+            snow-shot-selector-phased-tests
+            snow-shot-selector-lifecycle-tests)
+    endif()
     add_test(NAME snow-shot-shortcut-exit-confirmation-settings-tests
              COMMAND snow-shot-window-element-api-tests
                      --shortcut-exit-confirmation-settings-only)
@@ -3611,9 +3627,7 @@ if(SNOW_SHOT_BUILD_TESTS)
              COMMAND snow-shot-window-element-api-tests --guide-settings-only)
     snow_shot_import_offscreen_platform(snow-shot-window-element-api-tests)
     set_tests_properties(
-        snow-shot-window-element-api-tests
-        snow-shot-selector-phased-tests
-        snow-shot-selector-lifecycle-tests
+        ${_snow_shot_native_selector_tests}
         snow-shot-shortcut-exit-confirmation-settings-tests
         snow-shot-auto-qr-settings-tests
         snow-shot-screenshot-guide-settings-reset-tests
