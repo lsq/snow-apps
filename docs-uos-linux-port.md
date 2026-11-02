@@ -6299,6 +6299,35 @@ CI 目前只验证 24.04，这条留到真机验证阶段一起定。
 
 ---
 
+#### 9.6.49 `#ifndef Q_OS_MACOS` 不是 `#ifdef Q_OS_WIN`（设置项版）
+
+第二轮把 `settingscatalog.cpp` 里 4 个采集项的平台期望改成三分（macOS / Windows / 其他），
+但那只是**让测试承认现状**：Linux 上确实挂着这些项。现状本身是错的。
+
+四个项分别是 `screenshot.api-mode`（Auto/DXGI/WGC/GDI）、`screen-recording.api-mode`、
+`screenshot.window-element-api`（MSAA/UIA）、`screenshot.restore-original-screen-colors`。
+它们描述的是 Windows 的采集后端与色彩滤镜，而守卫写的是 `#ifndef Q_OS_MACOS` ——
+读起来像"非苹果"，实际在 Linux 上同样成立。于是 Linux 版在一条根本不读这些键的
+X11/Wayland 管线上摆出了"抓屏 API：DXGI"，还给一个后端是 stub、`hasService()` 恒 false 的
+选择器（C.12）摆出了窗口元素 API。
+
+修法是让守卫说真话：4 处 `#ifndef Q_OS_MACOS` → `#ifdef Q_OS_WIN`。**Windows 与 macOS 的
+真值完全不变**，所以这条改动只影响 Linux：`Advanced capture` 整节消失，录制页少一行 API 选择；
+两个键的存储值与 `SettingsSelectBinding` 映射都保留（只是不再提供入口）。
+
+连带的三处 bookkeeping：Linux 的 `sectionCount` 52 → 51（少的就是 `capture-compatibility`）；
+测试里 `nonMacCaptureItems` 这个"非 mac 但也有"的集合删掉，改成 macOS/Linux 都断言缺席；
+`settings_page_loading_tests` 的 `ScreenshotCaptureCompatibility` 重置用例从
+`#ifndef Q_OS_MACOS` 改成 `#ifdef Q_OS_WIN`（Linux 上那节已经不存在，重置自然是空操作）。
+
+**门禁**：新增 `scripts/check-linux-windows-only-settings.py`，进
+`check-linux-packaging.sh`。它盯两件事 —— 定义行所在分支、以及**每个调用点**所在分支，
+都必须有显式的 Windows 条件（`#ifdef` / `#if defined` / `#elif`）。只盯定义是不够的：
+把调用点单方面改回 `#ifndef Q_OS_MACOS`，定义仍在 Windows 分支里，项就重新出现在 Linux 上，
+而这正是最初那个 bug 的形状。反向验证：只把调用点改回去 → 门禁红（3 条），还原 → 绿。
+
+---
+
 ## 10. 工作量 / 优先级矩阵
 
 | 编号 | 工作项 | 规模 | 风险 | 优先级 |

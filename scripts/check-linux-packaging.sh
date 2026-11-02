@@ -121,6 +121,14 @@ echo "=== windows-only platform symbols"
 "$python_command" scripts/check-linux-windows-only-platform-symbols.py
 
 echo
+echo "=== windows-only settings"
+# The catalog offers DXGI/WGC/GDI, MSAA/UIA and the colour-restoration switch
+# only where a Windows capture backend exists. `#ifndef Q_OS_MACOS` looks like
+# "not Apple" but is true on Linux, so both the definition *and* every call site
+# are checked against an explicit Windows branch (port document §9.6.49).
+"$python_command" scripts/check-linux-windows-only-settings.py
+
+echo
 echo "=== ffmpeg wiring"
 # ffmpeg-sys-next resolves FFmpeg through FFMPEG_DIR *before* pkg-config and
 # then looks under <FFMPEG_DIR>/include only, so one stale prefix turns a
