@@ -587,12 +587,29 @@ void builtInCatalogIsCompleteAndValid() {
         QStringLiteral("input-monitoring"),
         QStringLiteral("microphone"),
     };
+    // Four of the eight are guarded by `#ifdef Q_OS_WIN` in the catalog, the
+    // other four by `#ifndef Q_OS_MACOS` - and that second guard is true on
+    // Linux too, so the port registers screenshot.api-mode, both capture API
+    // selectors and the colour compatibility switch even though they only
+    // describe Windows capture. Spell the split out rather than folding every
+    // non-macOS platform into "Windows": the two sets differ, and asserting the
+    // Windows set on Linux is what made this test red there.
+    const QSet<QString> nonMacCaptureItems{
+        QStringLiteral("screenshot.api-mode"),
+        QStringLiteral("screen-recording.api-mode"),
+        QStringLiteral("screenshot.window-element-api"),
+        QStringLiteral("screenshot.restore-original-screen-colors"),
+    };
 #ifdef Q_OS_MACOS
     const auto& expectedPlatformItems = macOnlyItems;
     const auto& excludedPlatformItems = windowsOnlyItems;
-#else
+#elif defined(Q_OS_WIN)
     const auto& expectedPlatformItems = windowsOnlyItems;
     const auto& excludedPlatformItems = macOnlyItems;
+#else
+    const auto expectedPlatformItems = nonMacCaptureItems;
+    const QSet<QString> excludedPlatformItems =
+        (windowsOnlyItems - nonMacCaptureItems) + macOnlyItems;
 #endif
     for (const auto& id : expectedPlatformItems)
         require(itemIds.remove(id), "catalog must contain each platform-specific setting");
