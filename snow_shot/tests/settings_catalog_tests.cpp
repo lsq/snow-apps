@@ -565,7 +565,10 @@ void builtInCatalogIsCompleteAndValid() {
         sectionCount == 53,
         "Windows includes the context menu shortcut category with capture and recording groups");
 #else
-    require(sectionCount == 52,
+    // 52 minus "Advanced capture": the capture API / window element API / colour
+    // restoration switch inside it describe Windows backends and are not built
+    // anywhere else.
+    require(sectionCount == 51,
             "catalog includes capture and recording groups with merged storage and desktop groups");
 #endif
     // Keep the shared total in one place: adding a shared setting must update both platforms.
@@ -587,19 +590,13 @@ void builtInCatalogIsCompleteAndValid() {
         QStringLiteral("input-monitoring"),
         QStringLiteral("microphone"),
     };
-    // Four of the eight are guarded by `#ifdef Q_OS_WIN` in the catalog, the
-    // other four by `#ifndef Q_OS_MACOS` - and that second guard is true on
-    // Linux too, so the port registers screenshot.api-mode, both capture API
-    // selectors and the colour compatibility switch even though they only
-    // describe Windows capture. Spell the split out rather than folding every
-    // non-macOS platform into "Windows": the two sets differ, and asserting the
-    // Windows set on Linux is what made this test red there.
-    const QSet<QString> nonMacCaptureItems{
-        QStringLiteral("screenshot.api-mode"),
-        QStringLiteral("screen-recording.api-mode"),
-        QStringLiteral("screenshot.window-element-api"),
-        QStringLiteral("screenshot.restore-original-screen-colors"),
-    };
+    // The capture API selectors, the window element API and the colour
+    // restoration switch are Windows-only in the catalog (`#ifdef Q_OS_WIN` in
+    // settingscatalog.cpp), so they belong in `windowsOnlyItems` above and both
+    // other platforms must assert their absence. They used to be guarded by
+    // `#ifndef Q_OS_MACOS`, which is also true on Linux; the port therefore
+    // registered DXGI/WGC/GDI and MSAA/UIA next to an X11/Wayland pipeline that
+    // has no native selector backend at all.
 #ifdef Q_OS_MACOS
     const auto& expectedPlatformItems = macOnlyItems;
     const auto& excludedPlatformItems = windowsOnlyItems;
@@ -607,9 +604,8 @@ void builtInCatalogIsCompleteAndValid() {
     const auto& expectedPlatformItems = windowsOnlyItems;
     const auto& excludedPlatformItems = macOnlyItems;
 #else
-    const auto expectedPlatformItems = nonMacCaptureItems;
-    const QSet<QString> excludedPlatformItems =
-        (windowsOnlyItems - nonMacCaptureItems) + macOnlyItems;
+    const QSet<QString> expectedPlatformItems = {};
+    const QSet<QString> excludedPlatformItems = windowsOnlyItems + macOnlyItems;
 #endif
     for (const auto& id : expectedPlatformItems)
         require(itemIds.remove(id), "catalog must contain each platform-specific setting");
@@ -699,8 +695,8 @@ void builtInCatalogIsCompleteAndValid() {
     const auto* apiMode =
         catalog.item({QStringLiteral("screenshots"), QStringLiteral("capture-compatibility"),
                       QStringLiteral("screenshot.api-mode")});
-#ifdef Q_OS_MACOS
-    require(apiMode == nullptr, "macOS must omit Windows-only capture backends");
+#ifndef Q_OS_WIN
+    require(apiMode == nullptr, "non-Windows builds must omit Windows capture backends");
 #else
     require(apiMode != nullptr &&
                 apiMode->title.translated() == QStringLiteral("Screenshot capture API") &&
@@ -712,8 +708,9 @@ void builtInCatalogIsCompleteAndValid() {
     const auto* windowElementApi =
         catalog.item({QStringLiteral("screenshots"), QStringLiteral("capture-compatibility"),
                       QStringLiteral("screenshot.window-element-api")});
-#ifdef Q_OS_MACOS
-    require(windowElementApi == nullptr, "macOS must omit the Windows-only element API setting");
+#ifndef Q_OS_WIN
+    require(windowElementApi == nullptr,
+            "non-Windows builds must omit the Windows-only element API setting");
 #else
     const auto* windowElementSelect =
         windowElementApi != nullptr
@@ -736,8 +733,8 @@ void builtInCatalogIsCompleteAndValid() {
     const auto* colorRestoration =
         catalog.item({QStringLiteral("screenshots"), QStringLiteral("capture-compatibility"),
                       QStringLiteral("screenshot.restore-original-screen-colors")});
-#ifdef Q_OS_MACOS
-    require(colorRestoration == nullptr, "macOS must omit Windows color restoration");
+#ifndef Q_OS_WIN
+    require(colorRestoration == nullptr, "non-Windows builds must omit Windows color restoration");
 #else
     require(colorRestoration != nullptr &&
                 colorRestoration->configurationKey ==
@@ -791,8 +788,8 @@ void builtInCatalogIsCompleteAndValid() {
     const auto* recordingApiMode = catalog.item({QStringLiteral("screen-recording"),
                                                  QStringLiteral("screen-recording-capture"),
                                                  QStringLiteral("screen-recording.api-mode")});
-#ifdef Q_OS_MACOS
-    require(recordingApiMode == nullptr, "macOS must omit Windows-only recording APIs");
+#ifndef Q_OS_WIN
+    require(recordingApiMode == nullptr, "non-Windows builds must omit Windows recording APIs");
 #else
     require(recordingApiMode != nullptr &&
                 recordingApiMode->configurationKey == QStringLiteral("screen_recording/api_mode") &&
@@ -951,7 +948,7 @@ void builtInCatalogIsCompleteAndValid() {
         QStringLiteral("drawing-settings"),
         QStringLiteral("drawing"),
         QStringLiteral("screenshot-capture"),
-#ifndef Q_OS_MACOS
+#ifdef Q_OS_WIN
         QStringLiteral("capture-compatibility"),
 #endif
     };
@@ -3036,8 +3033,8 @@ void searchIndexIsGeneratedAndRanked() {
                         }),
             "select option labels must be indexed");
     const auto windowElementApi = index.search(QStringLiteral("UIA"));
-#ifdef Q_OS_MACOS
-    require(windowElementApi.isEmpty(), "macOS search must omit Windows-only backend choices");
+#ifndef Q_OS_WIN
+    require(windowElementApi.isEmpty(), "non-Windows search must omit backend choices");
 #else
     require(!windowElementApi.isEmpty() && windowElementApi.constFirst().location.itemId ==
                                                QStringLiteral("screenshot.window-element-api"),

@@ -1810,7 +1810,7 @@ void featureLinksAdvancedControlsAndResets(const settings::SettingsRegistry& reg
                 configuration.value(codec) ==
                     snow_shot::storage::ConfigurationSchema::defaultValue(codec),
             "encoding reset restores its own defaults");
-#ifndef Q_OS_MACOS
+#ifdef Q_OS_WIN
     const QString cursor = QStringLiteral("screenshot/capture_cursor");
     const QString captureApi = QStringLiteral("screenshot/api_mode");
     const QString alternateApi =

@@ -1085,7 +1085,14 @@ SettingsItemDefinition updateModeItem() {
             payload};
 }
 
-#ifndef Q_OS_MACOS
+// Windows capture backends: DXGI/WGC/GDI, MSAA/UIA child-element walking, and
+// reversing Windows colour filters. These three used to be guarded by
+// `#ifndef Q_OS_MACOS`, which reads like "not Apple" but is also true on Linux
+// -- so the port shipped a "capture API" selector offering DXGI/WGC/GDI above
+// an X11/Wayland pipeline that ignores it, and a window-element API for a
+// selector with no native backend there. `#ifdef Q_OS_WIN` is the real
+// condition; macOS and Linux both hide the whole "Advanced capture" section.
+#ifdef Q_OS_WIN
 SettingsItemDefinition screenshotApiModeItem() {
     SettingsSelectDefinition payload;
     payload.binding = SettingsSelectBinding::ScreenshotApiMode;
@@ -1628,7 +1635,7 @@ SettingsItemDefinition selectionResizeModeItem() {
         });
 }
 
-#ifndef Q_OS_MACOS
+#ifdef Q_OS_WIN
 SettingsItemDefinition screenshotRestoreOriginalScreenColorsItem() {
     return switchItem(
         QStringLiteral("screenshot.restore-original-screen-colors"),
@@ -3420,7 +3427,7 @@ QVector<SettingsPageDefinition> builtInPages() {
                   "SettingsCatalog", "Include the pointer and capture controls in screenshots")),
               SettingsSectionReset::ScreenshotCaptureBehavior,
               {screenshotShowCursorItem(), screenshotCaptureUiInScrollingScreenshotItem()}},
-#ifndef Q_OS_MACOS
+#ifdef Q_OS_WIN
              {QStringLiteral("capture-compatibility"),
               settingsText(QT_TRANSLATE_NOOP("SettingsCatalog", "Advanced capture")),
               settingsText(QT_TRANSLATE_NOOP(
@@ -3528,7 +3535,7 @@ QVector<SettingsPageDefinition> builtInPages() {
                  SettingsSectionReset::ScreenRecordingCapture,
                  {
                      screenRecordingCaptureToolbarItem(),
-#ifndef Q_OS_MACOS
+#ifdef Q_OS_WIN
                      screenRecordingApiModeItem(),
 #endif
                  },
