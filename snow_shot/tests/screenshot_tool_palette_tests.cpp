@@ -3486,7 +3486,19 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
                 screenshotButtons.constFirst()->toolTip() ==
                     shortcutTooltip(QStringLiteral("Edit selection"),
                                     {QStringLiteral("M"), QStringLiteral("Ctrl+E")}),
-            "the screenshot move tool must retain Edit selection and its screenshot shortcut");
+            qPrintable(
+                QStringLiteral("the screenshot move tool must retain Edit selection and its "
+                               "screenshot shortcut: count=%1 name=\"%2\" tooltip=\"%3\" "
+                               "expectedTooltip=\"%4\"")
+                    .arg(screenshotButtons.size())
+                    .arg(screenshotButtons.isEmpty()
+                             ? QStringLiteral("<none>")
+                             : screenshotButtons.constFirst()->accessibleName(),
+                         screenshotButtons.isEmpty()
+                             ? QStringLiteral("<none>")
+                             : screenshotButtons.constFirst()->toolTip(),
+                         shortcutTooltip(QStringLiteral("Edit selection"),
+                                         {QStringLiteral("M"), QStringLiteral("Ctrl+E")}))));
 
     ScreenshotToolPalette::Options pinnedOptions;
     pinnedOptions.showDragHandle = true;
@@ -18860,15 +18872,40 @@ void moveToolExposesCaptureCursorAndRecaptureOptions() {
                 subtractRegion != nullptr && regionSeparator != nullptr && layout != nullptr &&
                 palette.actionToolbarVisible() && !palette.styleToolbarVisible(),
             "Move must materialize and display its dedicated options row");
+    // The indices include the spacer items that addStyleToolbarSpacing() inserts,
+    // so they are 0 addRegion, 1 spacer, 2 subtractRegion, 3 spacer, 4 the region
+    // type editor, 5 the compaction button, 6 spacer, 7 the spacing editor,
+    // 8 spacer, 9 the background opacity editor, 10 spacer, 11 the separator,
+    // 12 spacer, 13 the cursor button, 14 spacer, 15 recapture. Adding one more
+    // control before the separator moves all of these, which is the point of
+    // pinning them: it makes the change impossible to land unnoticed.
     require(
         layout->indexOf(addRegion) == 0 && layout->indexOf(subtractRegion) == 2 &&
-            layout->indexOf(regionSeparator) == 9 && layout->indexOf(cursor) == 11 &&
-            layout->indexOf(recapture) == 13 &&
+            layout->indexOf(regionSeparator) == 11 && layout->indexOf(cursor) == 13 &&
+            layout->indexOf(recapture) == 15 &&
             layout->indexOf(hideSelectionToolbar) == layout->count() - 1 &&
             layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4) != nullptr &&
             qobject_cast<QFrame*>(
                 layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4)->widget()) != nullptr,
-        "Move options must group region actions at the far left, before capture actions and hide");
+        qPrintable(
+            QStringLiteral("Move options must group region actions at the far left, before capture "
+                           "actions and hide: count=%1 add=%2 subtract=%3 separator=%4 cursor=%5 "
+                           "recapture=%6 hide=%7 separatorAtHideMinus4=%8")
+                .arg(layout->count())
+                .arg(layout->indexOf(addRegion))
+                .arg(layout->indexOf(subtractRegion))
+                .arg(layout->indexOf(regionSeparator))
+                .arg(layout->indexOf(cursor))
+                .arg(layout->indexOf(recapture))
+                .arg(layout->indexOf(hideSelectionToolbar))
+                .arg(layout->indexOf(hideSelectionToolbar) >= 4 &&
+                             layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4) != nullptr
+                         ? (qobject_cast<QFrame*>(
+                                layout->itemAt(layout->indexOf(hideSelectionToolbar) - 4)->widget()) !=
+                                    nullptr
+                                ? 1
+                                : 0)
+                         : -1)));
     auto* qr =
         palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotShowQrCodeButton"));
     require(qr && layout->indexOf(qr) == layout->indexOf(recapture) + 2 && !qr->isEnabled(),
