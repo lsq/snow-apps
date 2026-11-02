@@ -168,6 +168,7 @@ class ScreenshotFloatingToolPaletteWindow : public QWidget {
     bool m_changingKeyboardFocusPolicy = false;
     bool m_geometryCommitActive = false;
     bool m_geometryUpdatePending = false;
+    bool m_applyingPlacementScreen = false;
     bool m_pendingPreserveContentPosition = false;
     bool m_pendingForceRepaint = false;
 

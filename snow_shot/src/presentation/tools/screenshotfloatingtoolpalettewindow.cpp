@@ -719,6 +719,17 @@ bool ScreenshotFloatingToolPaletteWindow::applyPlacementScreen() {
         return false;
     }
 
+    // setScreen() on a created window recreates the platform window, which delivers
+    // QEvent::WinIdChange back to this widget, and event() answers that event by calling
+    // this function again. The face value termination test above does not help when the
+    // platform refuses the move: it keeps reporting the old screen, so every pass tries
+    // setScreen() once more and the two call sites recurse until the stack is gone
+    // (seen on Qt 5.15 / QPA offscreen, one screen only, ~700 levels deep). One attempt
+    // per call chain is all that can ever succeed, so refuse the nested re-entry.
+    if (m_applyingPlacementScreen) {
+        return false;
+    }
+    QScopedValueRollback<bool> applying(m_applyingPlacementScreen, true);
     handle->setScreen(m_placementScreen);
     return true;
 }
