@@ -2625,6 +2625,27 @@ void pinnedRecognitionContextMenuCopiesLocally() {
 void pinnedToolbarLayoutReloadsAndResetsIndependently() {
     namespace storage = snow_shot::storage;
     namespace layout = snow_shot::presentation::toolbar_layout;
+    const auto describePositions = [](const QVector<QStringList>& positions) {
+        // Not "slots": Qt defines that as a keyword macro, so the declaration would
+        // expand away and every later use would fail to parse.
+        QStringList descriptions;
+        for (const QStringList& position : positions) {
+            descriptions.push_back(QStringLiteral("{") + position.join(QStringLiteral(", ")) +
+                                   QStringLiteral("}"));
+        }
+        return descriptions.join(QStringLiteral(" "));
+    };
+    // positions() only collects AdButton widgets, so a separator-only position never
+    // shows up there: it renders as a QFrame. Drop the same positions from the
+    // expectation, otherwise the two sides of the comparison count different things.
+    const auto buttonPositions = [](const QVector<QStringList>& normalized) {
+        QVector<QStringList> result;
+        for (const QStringList& position : normalized) {
+            if (!position.isEmpty() && !layout::isSeparator(position.constFirst()))
+                result.append(position);
+        }
+        return result;
+    };
     const auto kind = storage::ScreenshotToolbarLayoutKind::PinnedActionTools;
     const storage::ScreenshotToolbarSettings toolbarSettings;
     const auto originalPinned = toolbarSettings.layout(kind);
@@ -2671,22 +2692,29 @@ void pinnedToolbarLayoutReloadsAndResetsIndependently() {
          QStringLiteral("separator")}};
     require(toolbarSettings.setLayout(kind, custom), "must save the custom pinned layout");
     QCoreApplication::processEvents();
-    require(positions() == layout::normalizedLayout(custom, kind).positions,
-            "existing pinned toolbar must reload its custom layout");
+    require(positions() == buttonPositions(layout::normalizedLayout(custom, kind).positions),
+            qPrintable(QStringLiteral("existing pinned toolbar must reload its custom layout: "
+                                      "actual=[%1] expected=[%2]")
+                           .arg(describePositions(positions()))
+                           .arg(describePositions(buttonPositions(
+                               layout::normalizedLayout(custom, kind).positions)))));
     require(toolbarSettings.setLayout(storage::ScreenshotToolbarLayoutKind::ActionTools, {}),
             "must update screenshot settings independently");
-    require(positions() == layout::normalizedLayout(custom, kind).positions,
+    require(positions() == buttonPositions(layout::normalizedLayout(custom, kind).positions),
             "screenshot settings must not change pinned groups");
     controller.setEditMode(false);
     controller.setEditMode(true);
-    require(positions() == layout::normalizedLayout(custom, kind).positions,
+    require(positions() == buttonPositions(layout::normalizedLayout(custom, kind).positions),
             "recreated pinned toolbar must reload the persisted layout");
     require(toolbarSettings.setLayout(kind, {}) &&
                 toolbarSettings.layout(kind) == layout::normalizedLayout({}, kind),
             "pinned toolbar defaults must be restorable");
-    auto defaults = layout::defaultPositions(kind);
-    defaults.removeAll(QStringList{QStringLiteral("separator")});
-    require(positions() == defaults, "restoring defaults must refresh an existing pinned toolbar");
+    const auto defaults = buttonPositions(layout::defaultPositions(kind));
+    require(positions() == defaults,
+            qPrintable(QStringLiteral("restoring defaults must refresh an existing pinned "
+                                      "toolbar: actual=[%1] expected=[%2]")
+                           .arg(describePositions(positions()))
+                           .arg(describePositions(defaults))));
     controller.setEditMode(false);
 }
 
