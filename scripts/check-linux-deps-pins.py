@@ -83,6 +83,13 @@ ARCHIVE_PINS = {
 # set and the barcode service stops compiling.
 OPENCV_PATCH = "0024-contrib-wechat-qrcode-in-memory-models.patch"
 
+# The patch that retires the aom encoder context before re-initialising it.
+# libheif 1.21 encodes colour and alpha on one encoder, so an AVIF with an
+# alpha channel otherwise calls `aom_codec_enc_init` on a live context. Same
+# rule as the OpenCV patch: the two sides compile the same code or they are
+# different programs.
+LIBHEIF_PATCH = "aom-encoder-context-lifetime.patch"
+
 VERSION = re.compile(r'^([a-z0-9_]+)_version="([^"]*)"', re.MULTILINE)
 SHA512 = re.compile(r'^([a-z0-9_]+)_sha512="([^"]*)"', re.MULTILINE)
 BUILDER = re.compile(r"^build_([a-z0-9_]+)\(\)", re.MULTILINE)
@@ -274,6 +281,32 @@ def main() -> int:
                 f"build would use the upstream WeChatQRCode")
     else:
         failures.append("the opencv4 vcpkg port has no portfile.cmake to compare against")
+
+    # --- the libheif AVIF encoder patch ------------------------------------
+    # The Windows side asks the libheif port for its `aom` feature, so it has an
+    # AVIF encoder. The Linux side has to as well, and with the same lifetime
+    # fix: a build that drops the option offers AVIF in every format list and
+    # then fails to save it, and a build that drops the patch re-initialises a
+    # live aom context on the second save.
+    heif_patch_path = f"cmake/vcpkg-overlay-ports/libheif/{LIBHEIF_PATCH}"
+    if not (root / heif_patch_path).is_file():
+        failures.append(f"the libheif AVIF encoder patch is missing: {heif_patch_path}")
+    if heif_patch_path not in text:
+        failures.append(
+            f"build-linux-deps.sh does not reference {heif_patch_path} -- the Linux "
+            f"build would reuse a live aom encoder context")
+    if "-DWITH_AOM_ENCODER=ON" not in text:
+        failures.append(
+            "build-linux-deps.sh does not enable WITH_AOM_ENCODER -- the Linux build "
+            "would offer AVIF and fail to save it")
+    heif_port = root / "cmake" / "vcpkg-overlay-ports" / "libheif" / "portfile.cmake"
+    if heif_port.is_file():
+        if LIBHEIF_PATCH not in heif_port.read_text(encoding="utf-8"):
+            failures.append(
+                f"the libheif vcpkg port does not apply {LIBHEIF_PATCH} -- the Windows "
+                f"build would differ from the Linux one")
+    else:
+        failures.append("the libheif vcpkg port has no portfile.cmake to compare against")
 
     # --- the WeChat QR models ----------------------------------------------
     # The same four models, with the same checksums, on both sides: a model

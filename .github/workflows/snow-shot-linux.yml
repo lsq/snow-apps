@@ -274,7 +274,7 @@ jobs:
             libpipewire-0.3-dev libpulse-dev libasound2-dev libdbus-1-dev libegl1-mesa-dev \
             libpng-dev libjpeg-dev libwebp-dev libgif-dev libtiff-dev \
             zlib1g-dev libtinyxml2-dev \
-            libde265-dev libx265-dev libbrotli-dev liblcms2-dev \
+            libde265-dev libx265-dev libaom-dev libbrotli-dev liblcms2-dev \
             libavcodec-dev libavfilter-dev libavformat-dev libavutil-dev \
             libswresample-dev libswscale-dev \
             python3 \
@@ -291,8 +291,10 @@ jobs:
       # `libjxl-dev` are *absent* from the apt list above: two sources for the
       # same codec means a failed build silently falls back to the old one, and
       # the only correct outcome is a loud `find_package` failure.
-      # libde265/x265/brotli/lcms2 stay, as the pinned HEIF and JXL builds use
-      # them as backends.
+      # libde265/x265/aom/brotli/lcms2 stay, as the pinned HEIF and JXL builds
+      # use them as backends. `libaom-dev` is the AVIF encoder: the manifest asks
+      # the libheif port for its `aom` feature on Windows, so a Linux build
+      # without one would offer AVIF in every format list and fail to save it.
       #
       # `libopencv-dev` is absent for the same reason, and harder: the
       # barcode service is written against OpenCV 4.12's `cv::barcode` (in

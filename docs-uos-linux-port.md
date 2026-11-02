@@ -469,10 +469,11 @@ sudo apt install -y libgl1-mesa-dev libxcb-xinerama0-dev libxkbcommon-dev libxkb
 # 图像/编解码
 # 注意：**不装** libheif-dev / libjxl-dev。这两个编解码器由 scripts/build-linux-deps.sh
 # 带固定版本自编（见 9.6.13），发行版版本比代码老一代；两个来源并存 = 自编失败时静默回落到
-# 老版本，唯一正确的做法是让 find_package 大声失败。libde265/x265/brotli/lcms2 要装，
-# 它们是自编 HEIF / JXL 的后端。
+# 老版本，唯一正确的做法是让 find_package 大声失败。libde265/x265/aom/brotli/lcms2 要装，
+# 它们是自编 HEIF / JXL 的后端（aom 就是 AVIF 编码器，缺它时设置里能选 AVIF、保存时报
+# "No encoder is available"，见 9.6.13 的修订）。
 sudo apt install -y libpng-dev libjpeg-dev libwebp-dev libgif-dev libtiff-dev \
-    libde265-dev libx265-dev libbrotli-dev liblcms2-dev zlib1g-dev libtinyxml2-dev
+    libde265-dev libx265-dev libaom-dev libbrotli-dev liblcms2-dev zlib1g-dev libtinyxml2-dev
 # FFmpeg（录制/导出链的绑定，§5.1 决定 Linux 用发行版包）
 # Rust 侧 ffmpeg-next -> ffmpeg-sys-next 的 build 脚本按 pkg-config 找这六个模块；
 # C++ 侧链接同一组。libavfilter 不是可选项：ffmpeg-next 的 "filter" feature
@@ -3151,10 +3152,13 @@ snow_image/src/codecs/jxl_codec.cpp:1048: error: 'JxlEncoderDistanceFromQuality'
 1. **GitHub 归档没有 submodule**，所以 libjxl 必须走 `JPEGXL_FORCE_SYSTEM_*`（hwy / brotli / lcms2）
    且 `JPEGXL_ENABLE_SKCMS=OFF`（skcms 是 submodule），`JPEGXL_BUNDLE_LIBPNG=OFF` 用前缀里的
    libpng。这不是选择，是归档包的硬约束。
-2. **libheif 只开 Windows 也开的那套 feature**：overlay port 的 default-features 只有 `hevc`
-   （libde265 + x265），**没有 aom** —— 也就是说 Windows 版本来就不支持 AVIF。Linux 上补 aom
-   不是"更完整"，而是与 Windows 不一致，所以 `WITH_AOM_*`/`WITH_DAV1D`/`WITH_X264`/
-   `WITH_JPEG_*`/`WITH_OpenJPEG_*` 一律 OFF。
+2. **libheif 只开 Windows 也开的那套 feature**：manifest 里 `libheif` 两个架构都写着
+   `"features": ["aom"]`（overlay port 的 `default-features` 只有 `hevc`，但 manifest 是
+   **显式追加** aom 的），所以 Windows 版本来就有 AVIF 编码器 —— 最初按 default-features
+   推理成"Windows 也没有 AVIF"，因而把 `WITH_AOM_*` 关掉了，那是**看漏了 manifest**：
+   Linux 侧因此能选 AVIF 却在保存时报 `No encoder is available for the requested format`
+   （CI run 41418087468 的 `quick-save-export` / `export-artifact` 两条），见下面的修订。
+   其余 `WITH_DAV1D`/`WITH_X264`/`WITH_JPEG_*`/`WITH_OpenJPEG_*` 仍一律 OFF。
 3. **apt 里删掉 `libheif-dev` / `libjxl-dev`**。两个来源并存时，自编失败会静默回落到发行版老版本，
    然后以一堆看不懂的 API 错误出现在编译期；删掉之后只剩一条路，失败就是 configure 期的
    `find_package` 报错。`libde265`/`x265`/`brotli`/`lcms2` 保留 —— 它们是自编时的后端。
@@ -6237,6 +6241,61 @@ run 42→46 五次红，全部落在"我们自己的工具"里：`.desktop` 的 
 `cmake -E chmod`、门禁 `chdir` 后的相对路径、把 `Icon=` 当文件名、genex 用 versionless 目标。
 产品侧每一步都在前进：deb 全绿 → AppImage 打得出来 → 打得对 → 布局齐全 → **整条链路绿**。
 红在哪一行，先问那行是产品还是尺子。
+
+---
+
+#### 9.6.48 run 41418087468：AVIF 在 Linux 上"能选不能存"——被 default-features 骗了
+
+run 41418087468（`73132118`）把失败从 113 条压到 99 条（arm64），剩下的失败里有两条是
+**同一个确定性的功能缺口**：
+
+```
+AVIF (libheif/AOM) encode failed: No encoder is available for the requested format.
+quick save must create the configured directory and use format/name settings:
+  format=avif stage=5 error=No encoder is available for the requested format.
+```
+
+`stage=5` 是编码阶段，`format=avif` 是测试里那一轮循环的当前格式 —— 也就是"设置里选得出
+AVIF、文件对话框里列得出 AVIF、MCP 的格式表里也有 AVIF，但真去存就报没有编码器"。
+
+**根因在 9.6.13 自己的注释里**：当时写的是"overlay port 的 default-features 只有 `hevc`，
+所以 Windows 也没有 aom，Linux 上补 aom 就不一致了"，于是 `WITH_AOM_DECODER=OFF` /
+`WITH_AOM_ENCODER=OFF`。但 `vcpkg.json` 的两个架构条目都是显式的
+
+```json
+{ "name": "libheif", "default-features": false, "features": ["aom"] }
+```
+
+`default-features: false` + `features: ["aom"]` —— Windows 侧**只有 aom**，连 hevc 都没有。
+只看 port 的 `default-features` 而不看 manifest 的调用点，得出的结论正好相反。
+
+修法（三处一起，缺一不可）：
+
+1. **`libaom-dev` 进 apt 清单**（§9.1 同步）。aom 走发行版，和 brotli / lcms2 同一档：
+   libheif 用它自己的 `cmake/modules/FindAOM.cmake`，那是 pkg-config 查找，`.deb` 提供的
+   `aom.pc` 就够，不需要 CMake config。libheif 1.21 要求 aom ≥ 3.0，24.04 是 3.8.2。
+2. **`WITH_AOM_DECODER=ON` / `WITH_AOM_ENCODER=ON`**，并**必须**同时应用 overlay port 的
+   `aom-encoder-context-lifetime.patch`。带 alpha 的静图会让 libheif 在同一个 encoder 对象上
+   先编彩色再编 alpha，上游 1.21 会对一个仍然活着的 context 再调一次 `aom_codec_enc_init`
+   —— Windows 从有 AVIF 那天起就带着这个补丁。linux-deps 脚本走的是未打补丁的 release
+   tarball，所以补丁要显式应用（`apply_patch`，与 OpenCV 那条同一个函数）。
+3. **两条断言，因为"编解码器没编进去"是静默的**：配置前 `pkg-config --exists aom`；安装后
+   `ldd libheif.so.* | grep libaom` —— 后者才是"AVIF 真的在库里"的证据。libheif 跳过某个
+   codec 时不打印任何东西。
+
+另外把 libheif 的 stamp key 从 `1.21.2` 改成 `1.21.2+aom`：**只按版本号打戳的话，改开关
+对已经构建过的工作站完全无效** —— stamp 命中就跳过，AVIF 永远缺着，而 CI 每次都从零构建，
+两边症状不一致。
+
+判据：产物里 `libheif.so` 的 NEEDED 里有 `libaom.so.*`；`quick-save-export` 与
+`export-artifact` 的 avif 轮次通过（本地 Windows 上同一条循环一直通过，因为 vcpkg 侧
+`aom` 特性是开着的 —— 这正是"两个平台的同一个程序"应当表现一致的地方）。
+
+**一个遗留风险，记在这里而不是等它变成安装失败**：aom 走发行版就等于走 `Depends`，
+`dpkg-shlibdeps` 会把它写成 24.04 的 `libaom3`；而 UOS 20（Debian 10 底）只有 `libaom0`，
+soname 不同。libde265/x265 早就是这个处境，所以这不是新问题，只是 AVIF 让它多了一个包。
+真要在"裸 UOS 20"上装 deb，出路是把 aom 也当私有库带进包（与 libjxl 同一套闭包机制）；
+CI 目前只验证 24.04，这条留到真机验证阶段一起定。
 
 ---
 

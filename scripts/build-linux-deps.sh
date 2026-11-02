@@ -706,9 +706,24 @@ build_libwebp() {
 # so highway is built right before it. brotli and lcms2 are taken from the
 # distribution (the port forces those too) -- see the apt list in §9.1.
 #
-# libheif is built with exactly the Windows feature set: HEVC via libde265/x265,
-# no aom (the overlay port's default features are `hevc` only, so AVIF is absent
-# on Windows as well -- building it here would be a *difference*, not parity).
+# libheif is built with exactly the Windows feature set: HEVC via libde265/x265
+# *and* AVIF via aom. The port's `default-features` list is `hevc` alone, but the
+# manifest asks for `aom` explicitly (`"features": ["aom"]` in `vcpkg.json`, once
+# for each architecture), so the Windows build does have an AVIF encoder -- and a
+# Linux build without one makes "save as AVIF" fail at runtime with "No encoder is
+# available for the requested format" even though the format is offered in the
+# settings, the file dialog and the MCP tool list.
+#
+# aom itself comes from the distribution (3.8.2 on 24.04, `libaom-dev`), like
+# brotli and lcms2: libheif finds it through its own `FindAOM.cmake`, which is a
+# pkg-config lookup, so the `aom.pc` the .deb ships is enough. libheif 1.21 wants
+# aom >= 3.0 and the encoder entry points it calls have not changed since.
+#
+# The one patch is the overlay port's `aom-encoder-context-lifetime.patch`: with
+# an alpha channel libheif runs a separate colour encode and alpha encode on one
+# encoder object, and upstream 1.21 calls `aom_codec_enc_init` on a context that
+# is still live. Windows has carried that fix for as long as it has had AVIF; a
+# Linux build without it re-initialises a live context on the second save.
 highway_version="1.3.0"
 highway_sha512="8b9f4fdc4fa60b6817417959853f5b55bf86aec9d35fc6664dda15179cc55e0a9940f3a46011a84b95263ba342dc47ca1cb93b04481ff4b63d724cce1815d7c6"
 
@@ -813,9 +828,13 @@ build_libjxl() {
 
 build_libheif() {
     local version="$libheif_version"
-    local url archive work build config
+    local url archive work build config patch_file heif_library
+    # The stamp carries the codec set, not just the version: an installation that
+    # was stamped before AVIF was enabled has the same version and would
+    # otherwise be reused forever, leaving the encoder missing on that machine.
+    local stamp_key="${version}+aom"
 
-    if stamped libheif "$version"; then
+    if stamped libheif "$stamp_key"; then
         echo "== libheif ${version}: up to date"
         return 0
     fi
@@ -825,10 +844,25 @@ build_libheif() {
     archive="${src_dir}/libheif-${version}.tar.gz"
     work="${build_root}/libheif-${version}"
     build="${work}/cmake-build"
+    patch_file="${repo_root}/cmake/vcpkg-overlay-ports/libheif/aom-encoder-context-lifetime.patch"
+
+    # AVIF needs an aom to link against. Checking here rather than letting
+    # `find_package(AOM)` decide keeps the failure legible: libheif disables the
+    # codec quietly when the option is on but the package is missing on some
+    # versions, and "saves as AVIF on Windows, errors on Linux" is exactly the
+    # difference this script exists to prevent.
+    pkg-config --exists aom \
+        || die "libaom is missing (apt: libaom-dev) -- libheif would lose its AVIF encoder"
 
     fetch "$url" "$archive"
     verify "$archive" "$libheif_sha512"
     unpack "$archive" "${work}/src"
+
+    # Same patch the vcpkg overlay port applies (its paths are `libheif/...`,
+    # which is the layout of the release tarball root). Without it the second
+    # AVIF save re-initialises a live aom context.
+    [[ -f "$patch_file" ]] || die "the aom encoder lifetime patch is missing: ${patch_file}"
+    apply_patch "${work}/src" "$patch_file"
 
     configure_build_install "${work}/src" "$build" \
         -DCMAKE_PREFIX_PATH="${prefix}" \
@@ -837,8 +871,8 @@ build_libheif() {
         -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
         -DWITH_LIBDE265=ON \
         -DWITH_X265=ON \
-        -DWITH_AOM_DECODER=OFF \
-        -DWITH_AOM_ENCODER=OFF \
+        -DWITH_AOM_DECODER=ON \
+        -DWITH_AOM_ENCODER=ON \
         -DWITH_DAV1D=OFF \
         -DWITH_JPEG_DECODER=OFF \
         -DWITH_JPEG_ENCODER=OFF \
@@ -854,7 +888,13 @@ build_libheif() {
 
     config="$(find "${prefix}" \( -name 'libheif-config.cmake' -o -name 'libheifConfig.cmake' \) -print -quit)"
     [[ -n "$config" ]] || die "libheif installed no CMake config package"
-    stamp libheif "$version"
+    # "AVIF is available" is only true if the encoder was actually compiled into
+    # the shared object; libheif prints nothing when it skips a codec.
+    heif_library="$(find "${prefix}" -name 'libheif.so.*' -print -quit)"
+    [[ -n "$heif_library" ]] || die "libheif installed no shared library"
+    ldd "$heif_library" 2>/dev/null | grep -q 'libaom' \
+        || die "the installed libheif does not link libaom -- AVIF encoding would be missing"
+    stamp libheif "$stamp_key"
 }
 
 # --- OpenCV + opencv_contrib -----------------------------------------------
