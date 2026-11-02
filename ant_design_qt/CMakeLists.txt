@@ -651,7 +651,11 @@ if(ADQT_BUILD_TESTS)
     add_test(NAME adqt-popup-relayout-tests COMMAND adqt-qt-tool-popup-tests
         stationaryPopoverStopsRelayout visiblePopoverRelayoutDoesNotRaise -platform offscreen)
     set_tests_properties(adqt-popup-relayout-tests PROPERTIES LABELS "unit")
-    set_tests_properties(adqt-popup-hover-geometry-tests PROPERTIES LABELS "unit")
+    # The fixture asks for a 3840x2160@150% primary and a second display; the
+    # offscreen plugin reads `configfile=` only from Qt 6 on, so on Qt 5 the test
+    # exits with 77 and must be reported as skipped rather than failed.
+    set_tests_properties(adqt-popup-hover-geometry-tests PROPERTIES LABELS "unit"
+        SKIP_RETURN_CODE 77)
     add_test(NAME adqt-qt-tool-popup-tests COMMAND adqt-qt-tool-popup-tests)
     if(WIN32)
         set_tests_properties(adqt-qt-tool-popup-tests PROPERTIES

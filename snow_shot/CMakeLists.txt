@@ -11854,7 +11854,7 @@ if(SNOW_SHOT_BUILD_TESTS OR SNOW_APPS_BUILD_BENCHMARKS)
             COMMAND snow-shot-floating-toolbar-tests --menu-lifecycle-only
                 -platform "offscreen:configfile=menu-screen.json")
         set_tests_properties(snow-shot-floating-toolbar-menu-lifecycle-tests PROPERTIES
-            LABELS "unit" TIMEOUT 30 SNOW_TEST_CROSS_PLATFORM TRUE
+            LABELS "unit" TIMEOUT 30 SNOW_TEST_CROSS_PLATFORM TRUE SKIP_RETURN_CODE 77
             WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/test-support"
             ENVIRONMENT "${_SNOW_SHOT_OFFSCREEN_QPA_ENVIRONMENT}"
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>")
@@ -11999,6 +11999,15 @@ endforeach()
 if(SNOW_SHOT_BUILD_TESTS)
     add_executable(snow-shot-original-image-preview-tests
         tests/screenshot_original_image_preview_tests.cpp)
+    if(WIN32)
+        # This test resolves HMONITORs itself (mixed-DPI screen ownership), and the
+        # helper lives in a translation unit that every other consumer lists
+        # explicitly. Without it the target only links on Linux and macOS, where
+        # the `Q_OS_WIN` half of the test file is not compiled at all.
+        target_sources(snow-shot-original-image-preview-tests PRIVATE
+            src/platform/windows/monitorgeometry.cpp)
+        target_link_libraries(snow-shot-original-image-preview-tests PRIVATE user32 gdi32)
+    endif()
     target_link_libraries(snow-shot-original-image-preview-tests PRIVATE
         snow_shot_original_image_preview)
     snow_shot_import_offscreen_platform(snow-shot-original-image-preview-tests)
@@ -12011,6 +12020,7 @@ if(SNOW_SHOT_BUILD_TESTS)
             -platform offscreen:configfile=original_image_preview_mixed_dpi_screens.json)
     set_tests_properties(snow-shot-original-image-preview-mixed-dpi-tests PROPERTIES
         LABELS "unit" TIMEOUT 60 WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        SKIP_RETURN_CODE 77
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>")
     if(APPLE)
         set_source_files_properties(tests/screenshot_original_image_preview_tests.cpp

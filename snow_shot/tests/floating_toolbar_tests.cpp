@@ -726,6 +726,20 @@ void reveal(FloatingToolbarController& controller) {
     timer(controller, "floatingToolbarRevealTimer");
 }
 void verifyMenuLifecycle() {
+    // The overflow half of this case needs a desktop narrow enough that the
+    // tools cannot fit -- 240 dp, from `-platform
+    // offscreen:configfile=menu-screen.json`. The offscreen plugin reads
+    // configfile= only from Qt 6 on, so on Qt 5 the single 800x600 screen leaves
+    // room for every tool and there is no overflow to assert. Exit 77
+    // (SKIP_RETURN_CODE in CMake) rather than blame the toolbar for a missing
+    // plugin feature.
+    const QScreen* const primary = QGuiApplication::primaryScreen();
+    if (primary == nullptr || primary->availableGeometry().width() > 320) {
+        std::cout << "SKIP: the offscreen plugin did not honour "
+                     "configfile=menu-screen.json, so the 240 dp desktop that "
+                     "forces overflow is missing\n";
+        std::exit(77);
+    }
     const storage::FloatingToolbarSettings stored;
     stored.setHideInFullscreen(false);
     FloatingToolbarController controller(nullptr, [](QScreen*) { return false; });
