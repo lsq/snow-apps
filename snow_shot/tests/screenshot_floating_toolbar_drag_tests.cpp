@@ -1873,8 +1873,24 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
 
     const QStringList actionIds = snow_shot::presentation::toolbar_layout::defaultOrder(
         snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools);
-    const int expectedActionButtonCount = static_cast<int>(actionIds.size());
-    constexpr int expectedDefaultActionButtonCount = 7;
+    // The action order also lists the separator component, which renders as a
+    // QFrame and never becomes a toolbar button, so it must not be counted as an
+    // independent slot.
+    int expectedActionButtonCount = 0;
+    for (const QString& itemId : actionIds) {
+        if (!snow_shot::presentation::toolbar_layout::isSeparator(itemId))
+            ++expectedActionButtonCount;
+    }
+    // One button per non-separator position of the built-in action layout. Derive it
+    // from the layout definition so a new default slot cannot rot a magic number.
+    int expectedDefaultActionButtonCount = 0;
+    for (const QStringList& position :
+         snow_shot::presentation::toolbar_layout::defaultPositions(
+             snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools)) {
+        if (!position.isEmpty() &&
+            !snow_shot::presentation::toolbar_layout::isSeparator(position.constFirst()))
+            ++expectedDefaultActionButtonCount;
+    }
     const snow_shot::storage::ScreenshotToolbarSettings toolbarSettings;
     require(toolbarSettings.setLayout(snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools,
                                       snow_shot::storage::ScreenshotToolbarLayout{{}, actionIds}),
@@ -1923,15 +1939,34 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
                     snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools, unstackedLayout),
                 "failed to persist the widest screenshot action layout");
         settleQueuedRefreshes();
-        require(actionToolbarButtonCount(*screenshotToolbar.palette()) ==
-                        expectedActionButtonCount &&
+        const int reloadedActionCount = actionToolbarButtonCount(*screenshotToolbar.palette());
+        QStringList placedIds;
+        for (const adqt::widgets::AdButton* button :
+             screenshotToolbar.palette()->findChildren<adqt::widgets::AdButton*>()) {
+            for (const QString& itemId :
+                 button->property("screenshotToolbarPositionItems").toStringList()) {
+                if (actionIds.contains(itemId) && !placedIds.contains(itemId))
+                    placedIds.push_back(itemId);
+            }
+        }
+        QStringList missingIds;
+        for (const QString& itemId : actionIds) {
+            if (!placedIds.contains(itemId))
+                missingIds.push_back(itemId);
+        }
+        require(reloadedActionCount == expectedActionButtonCount &&
                     screenshotToolbar.palette()->findChild<adqt::widgets::AdButton*>(
                         QStringLiteral("screenshotPinToScreenButton")) != nullptr &&
                     screenshotToolbar.palette()->findChild<adqt::widgets::AdButton*>(
                         QStringLiteral("screenshotQrRecognitionButton")) != nullptr &&
                     screenshotToolbar.palette()->findChild<adqt::widgets::AdButton*>(
                         QStringLiteral("screenshotTableRecognitionButton")) != nullptr,
-                "the screenshot window should live-reload every independent action slot");
+                qPrintable(QStringLiteral("the screenshot window should live-reload every "
+                                          "independent action slot: slots=%1 expected=%2 "
+                                          "missing=[%3]")
+                               .arg(reloadedActionCount)
+                               .arg(expectedActionButtonCount)
+                               .arg(missingIds.join(QStringLiteral(", ")))));
         require(actionToolbarButtonCount(*genericToolbar.palette()) == 2,
                 "screenshot action layout reloads must not modify generic palettes");
         requireDynamicToolbarContentFits(
@@ -1942,12 +1977,21 @@ void screenshotActionLayoutReloadIsWindowScopedAndFitsThePreset() {
                     snow_shot::storage::ScreenshotToolbarLayoutKind::ActionTools, {}),
                 "failed to restore the default screenshot action layout");
         settleQueuedRefreshes();
+        const int defaultActionCount = actionToolbarButtonCount(*screenshotToolbar.palette());
         require(
-            actionToolbarButtonCount(*screenshotToolbar.palette()) ==
-                    expectedDefaultActionButtonCount &&
+            defaultActionCount == expectedDefaultActionButtonCount &&
                 screenshotToolbar.palette()->findChild<adqt::widgets::AdButton*>(
                     QStringLiteral("screenshotTableQrButton")) != nullptr,
-            "restoring the default layout should restore the shared recognition/conversion slot");
+            qPrintable(QStringLiteral("restoring the default layout should restore the shared "
+                                      "recognition/conversion slot: slots=%1 expected=%2 "
+                                      "tableQr=%3")
+                           .arg(defaultActionCount)
+                           .arg(expectedDefaultActionButtonCount)
+                           .arg(screenshotToolbar.palette()
+                                        ->findChild<adqt::widgets::AdButton*>(
+                                            QStringLiteral("screenshotTableQrButton")) != nullptr
+                                    ? 1
+                                    : 0)));
         require(actionToolbarButtonCount(*genericToolbar.palette()) == 2,
                 "restoring the screenshot layout must not modify generic palettes");
     }
