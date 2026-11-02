@@ -3478,8 +3478,17 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
     screenshotOptions.showDistanceTool = false;
     screenshotOptions.showAngleTool = false;
     screenshotOptions.enableStyleToolbar = false;
+    // showSpeechBubbleTool defaults to true, and leaving it on adds a third
+    // button, which is what this assertion was failing on: the count said 3
+    // while the name and tooltip of the first entry were already correct.
+    screenshotOptions.showSpeechBubbleTool = false;
     ScreenshotToolPalette screenshotPalette(screenshotOptions);
     const QList<adqt::widgets::AdButton*> screenshotButtons = mainToolbarButtons(screenshotPalette);
+    QStringList buttonNames;
+    for (const auto* button : screenshotButtons) {
+        buttonNames.push_back(button->accessibleName().isEmpty() ? button->objectName()
+                                                                 : button->accessibleName());
+    }
     require(screenshotButtons.size() == 2 &&
                 screenshotButtons.constFirst()->accessibleName() ==
                     QStringLiteral("Edit selection") &&
@@ -3489,7 +3498,7 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
             qPrintable(
                 QStringLiteral("the screenshot move tool must retain Edit selection and its "
                                "screenshot shortcut: count=%1 name=\"%2\" tooltip=\"%3\" "
-                               "expectedTooltip=\"%4\"")
+                               "expectedTooltip=\"%4\" buttons=[%5]")
                     .arg(screenshotButtons.size())
                     .arg(screenshotButtons.isEmpty()
                              ? QStringLiteral("<none>")
@@ -3498,7 +3507,8 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
                              ? QStringLiteral("<none>")
                              : screenshotButtons.constFirst()->toolTip(),
                          shortcutTooltip(QStringLiteral("Edit selection"),
-                                         {QStringLiteral("M"), QStringLiteral("Ctrl+E")}))));
+                                         {QStringLiteral("M"), QStringLiteral("Ctrl+E")}),
+                         buttonNames.join(QStringLiteral(", ")))));
 
     ScreenshotToolPalette::Options pinnedOptions;
     pinnedOptions.showDragHandle = true;
@@ -3510,6 +3520,7 @@ void moveToolPresentationUsesTheOwningShortcutScope() {
     pinnedOptions.showDistanceTool = false;
     pinnedOptions.showAngleTool = false;
     pinnedOptions.enableStyleToolbar = false;
+    pinnedOptions.showSpeechBubbleTool = false;
     ScreenshotToolPalette pinnedPalette(pinnedOptions);
     const QList<adqt::widgets::AdButton*> pinnedButtons = mainToolbarButtons(pinnedPalette);
     QWidget* dragHandle =
