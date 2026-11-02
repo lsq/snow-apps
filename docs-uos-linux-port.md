@@ -6696,11 +6696,12 @@ re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边�
 判据写法：可见性要求保留给所有平台，激活要求只留给真实平台（本仓库里就是
 `--hide-to-top-native-only -platform windows` 那个变体）。
 
-### C.11 未结案：`snow-shot-global-canvas-color-sampling-tests` 在 offscreen 上爆栈
+### C.11 已修：`snow-shot-global-canvas-color-sampling-tests` 在 offscreen 上爆栈
 
-状态：**未修**，但定性已经足够，留给下一轮。
+状态：**已修**（`0d52a58d`）。根因是 `applyPlacementScreen()` 缺重入闸，见下面「C.11 结论」。
+本节保留当时的判据、排除过程与工具，因为里面有一半假设是被**证伪**的，值得留档。
 
-现象与判据：
+修前的现象与判据：
 
 | 平台 | 结果 |
 | --- | --- |
@@ -6731,11 +6732,11 @@ re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边�
 dump 没有可用的展开信息（`MiniDumpWriteDump` 带异常流时会返回
 `0x80070006 ERROR_INVALID_HANDLE`，只能退化成不带异常流的 dump）。
 
-真正有效的下一步是把"最深栈点采样"做完整：在测试里起一个线程，`SuspendThread` +
+原本以为"最深栈点采样"是下一步：在测试里起一个线程，`SuspendThread` +
 `GetThreadContext` 采主线程，**只在 RSP 创新低时**把 `(rsp, rip)` 写进文件，进程崩掉之后
-再离线符号化。这一轮已经能拿到 ~21 个下降点、深度约 500 KB，最深处落在 exe 之外的一个
-模块里，但因为 dump 里的模块尺寸与现场不一致，符号化对不准——需要把模块路径一起写出来
-（或直接用现场的 PDB 按 RVA 解析），才能定位到具体函数。
+再离线符号化。这条路走通了采样（~21 个下降点、深度约 500 KB）但符号化对不准，而且它只能
+给出 RIP，看不出一层的**形状**。**已经证明不需要它**：栈溢出的 dump 里线程栈内存是完整的，
+线性扫栈 + `stack-from-minidump.py` 就能把 700 层周期照出来，见下一节。
 
 复现命令（本机）：
 
@@ -6769,12 +6770,111 @@ rc=1  save test template        # 断言失败，不是崩
 说明爆栈和模板问题是两件事。修完的模板用例顺带提供了一个更好的复现面：不带参数的套件
 和 `--color-sampling-only` 都能在 40 秒内撞上它。
 
-**新线索**：两次崩溃前 `does not support raise()` 的条数分别是 661（采样变体）和 716
-（完整套件），和"递归深度"同一量级；也就是说每一层递归都在 raise 一个**顶层窗口**。
-而本机 `-platform windows` 上同样的代码路径不崩、也一条 raise 警告都没有。
-下一个假设应当围绕"offscreen 上某个顶层窗口在 `raise()` 之后又被要求 show/activate"，
-并且**每次 show 都要重新 `create()`**（offscreen 的 `create()` 若不落地，就会形成
-`raise → create → show → raise` 的环）。验证方式：给
-`QWidgetPrivate` 不可达，就给 `ScreenshotFloatingToolPaletteWindow::showEvent` /
-`activateDrawing()` / `QWidget::create` 的调用方（`winId()` 调用点）加同一计数器，
-看哪一个在 600+ 层上增长。
+**当时的一个错误推断**：两次崩溃前 `does not support raise()` 的条数分别是 661（采样变体）
+和 716（完整套件），和"递归深度"同一量级，于是被读成"每一层递归都在 raise 一个顶层窗口"。
+修完之后这个条数是 692 / 722，**没变**——raise 是测试自己正常的显示/前置动作产生的，
+和递归深度只是碰巧同量级。教训：只凭"两个数字同量级"连不成因果，得让修完之后的数字
+再讲一遍同样的故事才算数。
+
+### C.11 结论：`WinIdChange → setScreen() → WinIdChange` 的自我递归
+
+#### 怎么拿到的栈
+
+不用"最深栈点采样"（上文的采样线程只给出 RSP/RIP，符号化对不准）。真正管用的是
+**把 `dump-on-crash.ps1` 当调试器**：它 `DebugActiveProcess` 之后收到的**第一个**异常就是
+真凶，后面的不是。
+
+```
+exception 0xC00000FD at 0x7FF6CD17BB77 first-chance=1 access=1 0xD78C803B10   ← 真凶
+exception 0xC0000005 at 0x7FFF6A1C9772 ... (×3)                              ← 死后的异常派发
+```
+
+`0xC00000FD` 是 `STATUS_STACK_OVERFLOW`，`access=1`（写）+ 目标地址落在栈区间下沿，
+正是 `_chkstk` 写守卫页；`0x7FF6CD17BB77` 在 exe 映像内，符号化后是
+`WindowShortcutManager::eventFilter+0x27`（+39 字节，就是函数序言）。后面那三条
+`0xC0000005` 的 rip 落在 ntdll，是线程已经死掉之后系统还在派发异常——**别拿它当崩溃点**。
+上一轮的"最深栈点采样"其实也摸到了同一个 `eventFilter+0x27`，只是单点 RIP 说明不了
+"这个函数是被谁一层层调进来的"，于是它被误读成"环在 eventFilter 之上"，方向就偏了。
+
+转储里没有异常流（`MiniDumpWriteDump` 带异常信息仍返回 `0x80070006`），但
+`MINIDUMP_THREAD.Stack` 的**内存是完整的**，所以离线线性扫栈就够：
+
+```
+python .workbuddy/qt5-port/stack-from-minidump.py \
+  .workbuddy/qt5-port/dumps/gcs4/snow-shot-global-canvas-tests.dmp \
+  22228 snow-shot-global-canvas-tests.exe 120
+```
+
+三个必须踩过的坑（都已在脚本里修好）：
+
+1. **候选地址只认 `.text`**。按整张映像范围筛会把 `.data/.rdata` 里的 vtable、字符串指针
+   也算进来，它们翻不出符号就掉到"最近的下一个符号"，输出成 `+0xA41CF0` 这种一眼假的位移。
+2. **栈向下长**：低地址 = 最内层帧。上一版取 `entries[-keep:]` 拿到的是 CRT 入口那几层
+   （`mainCRTStartup`），完全看不到递归。
+3. 测试 exe 不叫 `snow_shot.exe`，映像名要能传参。
+
+#### 栈长什么样
+
+同一组返回地址以 **≈13 KB 一层**的周期重复了 700 次，每层固定这几个：
+
+```
+ScreenshotFloatingToolPaletteWindow::event            (+0x88 / +0x99)
+ScreenshotFloatingToolPaletteWindow::applyPlacementScreen
+AdDpiStableWindowController::eventFilter              (+0x16A)
+WindowShortcutManager::eventFilter                    (+0x2054, 出现两次)
+QPointer<QWidget>/QPointer<QScreen>::data, QWeakPointer<QObject>::internalData,
+QBasicAtomicInteger<int>::loadRelaxed ...
+```
+
+两个 `eventFilter` 都在链上很好解释：它们是同一个事件派发的**过滤器链**
+（`QApplicationPrivate::notify_helper` 会先过全部 object filter 再进 `event()`），
+不是两层嵌套。真正的环只有两跳：
+
+```
+ScreenshotFloatingToolPaletteWindow::event(QEvent::WinIdChange)
+  → applyPlacementScreen()
+    → QWindow::setScreen(m_placementScreen)      // 重建平台窗口
+      → QEvent::WinIdChange 又一次送到本 widget
+        → event() → applyPlacementScreen() → ...
+```
+
+#### 为什么 offscreen 上才炸
+
+`applyPlacementScreen()` 的终止条件写成"已经在新屏上就返回"：
+
+```cpp
+if (handle->screen() == m_placementScreen) return false;
+handle->setScreen(m_placementScreen);
+```
+
+Qt 5.15 的 `QWindow::setScreen()` 在**已创建**的窗口上是"销毁并重建平台窗口"，重建就会
+补一个 `QEvent::WinIdChange`。而 QPA offscreen 只暴露一块屏：当 `m_placementScreen` 不是
+它、`setScreen()` 又被拒时，`handle->screen()` 永远不等于目标屏 —— 于是每进一层都再
+`setScreen()` 一次，环没有出口，只能等栈耗尽。`-platform windows` 上 `setScreen()` 能落地，
+第二轮进来时终止条件成立，所以同样的代码在 Windows 上一直是好的。
+
+这也解释了为什么上一轮那些计数器全部"无辜"：环确实不经过 `QApplication::notify`
+（它只在 `notify_helper` 之上）、也不经过控制器/采样窗口，它只在**这一个 widget 的
+`event()` 与 `applyPlacementScreen()` 之间**闭合。
+
+#### 修法
+
+一次性尝试，拒绝嵌套重入（和 `ScreenshotOriginalImagePreviewWindow::applyGeometry()`
+已有的 `m_applyingGeometry` 同一形状）：
+
+```cpp
+if (m_applyingPlacementScreen) return false;
+QScopedValueRollback<bool> applying(m_applyingPlacementScreen, true);
+handle->setScreen(m_placementScreen);
+```
+
+#### 修完的判据
+
+| 入口 | 修前 | 修后 |
+| --- | --- | --- |
+| `-platform offscreen`（完整套件） | `rc=127`（`0xC00000FD`），716 条 raise | **EXIT=0**，722 条 raise |
+| `--color-sampling-only -platform offscreen`（CI 上那条） | `0xC00000FD`，661 条 raise | **EXIT=0**，692 条 raise |
+| `-platform windows`（完整套件） | EXIT=0 | **EXIT=0** |
+
+顺带确认：`raise()` / `setting window masks` 这些 "This plugin does not support ..." 警告在
+修完后**照旧刷**，它们只是 offscreen 少几个平台能力，不是症状，不要去"修"它们。
