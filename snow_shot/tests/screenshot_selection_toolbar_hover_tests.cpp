@@ -1393,8 +1393,35 @@ void aspectRatioPopupOwnsInputAndEndsWithToolbarLifecycle() {
                         ScreenshotSelectionAspectRatioPreset::Landscape16x9} &&
                 !select->popupVisible(),
             "Enter must apply one selected preset and dismiss the dropdown");
-    require(QApplication::focusWidget() == &host,
-            "closing a ratio popup must restore the previous screenshot keyboard owner");
+    // The product restores focus only while the screenshot window is still the
+    // active window -- taking focus back from another application would be worse
+    // than losing it. A runner without a window manager never activates the
+    // window at all, so the strong contract cannot hold there. Which case this
+    // is has to be visible in the failure message, otherwise "focus was not
+    // restored" and "focus was not stolen" look identical.
+    const auto describeFocus = [&]() -> QString {
+        const QWidget* focused = QApplication::focusWidget();
+        return QStringLiteral("focus=%1 hostActive=%2 platform=%3")
+            .arg(focused == nullptr ? QStringLiteral("<none>")
+                                    : QStringLiteral("%1(\"%2\")").arg(
+                                          QString::fromLatin1(focused->metaObject()->className()),
+                                          focused->objectName()))
+            .arg(host.isActiveWindow() ? 1 : 0)
+            .arg(QGuiApplication::platformName());
+    };
+    if (host.isActiveWindow()) {
+        require(QApplication::focusWidget() == &host,
+                qPrintable(QStringLiteral("closing a ratio popup must restore the previous "
+                                          "screenshot keyboard owner: %1")
+                               .arg(describeFocus())));
+    } else {
+        const QWidget* focused = QApplication::focusWidget();
+        require(focused == nullptr || focused == &host ||
+                    !select->view()->window()->isAncestorOf(focused),
+                qPrintable(QStringLiteral("closing a ratio popup must not leave the keyboard "
+                                          "inside the dismissed popup: %1")
+                               .arg(describeFocus())));
+    }
     require(select->lineEdit()->palette().color(QPalette::Text) ==
                 screenshot_selection_toolbar::panelTextColor(),
             "the closed aspect-ratio trigger must retain the same white text");
