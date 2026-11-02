@@ -3145,13 +3145,32 @@ int main(int argc, char* argv[]) {
             auto* palette = window.palette();
             require(palette != nullptr, "screenshot toolbar should expose its palette");
             palette->setActiveTool(ScreenshotToolPalette::Tool::Select);
-            auto* reset = palette->findChild<adqt::widgets::AdButton*>(
+            palette->prepareForDisplay();
+            // Canvas reset moved out of the selection toolbar into the eraser
+            // families, so this contract has to follow the control instead of
+            // assuming which panel owns it.
+            require(palette->findChild<adqt::widgets::AdButton*>(
+                        QStringLiteral("screenshotResetCanvasButton")) == nullptr,
+                    "the screenshot selection toolbar must not expose canvas reset");
+            palette->setActiveTool(ScreenshotToolPalette::Tool::Eraser);
+            palette->prepareForDisplay();
+            auto* eraserControls = palette->stylePanel()->findChild<QWidget*>(
+                QStringLiteral("screenshotEraserStyleControls"));
+            require(eraserControls != nullptr,
+                    "the eraser tool should materialize its style controls");
+            auto* reset = eraserControls->findChild<adqt::widgets::AdButton*>(
                 QStringLiteral("screenshotResetCanvasButton"));
-            require(reset != nullptr && reset->isEnabled(),
-                    "screenshot reset should be enabled without selection");
+            require(reset != nullptr && !reset->isHidden() && reset->isEnabled(),
+                    qPrintable(QStringLiteral("screenshot reset should be enabled without "
+                                              "selection: found=%1 hidden=%2 enabled=%3")
+                                   .arg(reset != nullptr ? 1 : 0)
+                                   .arg(reset != nullptr && reset->isHidden() ? 1 : 0)
+                                   .arg(reset != nullptr && reset->isEnabled() ? 1 : 0)));
             reset->click();
             require(commands.deleteAllElementsCount == 1,
                     "screenshot reset should forward exactly one canvas command");
+            require(palette->activeTool() == ScreenshotToolPalette::Tool::Eraser,
+                    "canvas reset must not change the active tool");
             return 0;
         }
         if (app.arguments().contains(QStringLiteral("--ocr-translation-toggle-only"))) {
