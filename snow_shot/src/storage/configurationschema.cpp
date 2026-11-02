@@ -2097,9 +2097,11 @@ ConfigurationNormalization normalizeWatermarkTemplates(const QJsonValue& value) 
 }
 
 ConfigurationNormalization normalizeDrawTemplates(const QJsonValue& value) {
-    // Matches the engine's DRAW_TEMPLATE_SCHEMA_VERSION; the real serialized-template
-    // storage regression detects future engine format changes at this boundary.
-    constexpr int maximumSupportedTemplateVersion = 6;
+    // Mirrors DRAW_TEMPLATE_SCHEMA_VERSION in
+    // snow_draw_engine_qt/crates/snow-draw-engine-editor/src/draw_template.rs. A stale
+    // value here silently rejects every template the engine just wrote, so the two
+    // have to move together.
+    constexpr int maximumSupportedTemplateVersion = 7;
     if (!value.isArray()) {
         return {};
     }
