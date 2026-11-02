@@ -6847,11 +6847,14 @@ if (handle->screen() == m_placementScreen) return false;
 handle->setScreen(m_placementScreen);
 ```
 
-Qt 5.15 的 `QWindow::setScreen()` 在**已创建**的窗口上是"销毁并重建平台窗口"，重建就会
-补一个 `QEvent::WinIdChange`。而 QPA offscreen 只暴露一块屏：当 `m_placementScreen` 不是
-它、`setScreen()` 又被拒时，`handle->screen()` 永远不等于目标屏 —— 于是每进一层都再
-`setScreen()` 一次，环没有出口，只能等栈耗尽。`-platform windows` 上 `setScreen()` 能落地，
-第二轮进来时终止条件成立，所以同样的代码在 Windows 上一直是好的。
+Qt 5.15 的 `QWindow::setScreen()` 文档原文是 **"If the window has been created, it will be
+recreated on the newScreen"** —— 已创建的窗口会被**重建**，重建就会给 widget 补一个
+`QEvent::WinIdChange`（这一点文档没写，但栈的形状和"窗口一重建就重发 WinIdChange"的既有
+行为都指向它；本机能复现的 Qt 5.15.2 上实测如此，换 Qt 版本要重新确认）。而 QPA offscreen
+只暴露一块屏：当 `m_placementScreen` 不是它、`setScreen()` 又被拒时，`handle->screen()`
+永远不等于目标屏 —— 于是每进一层都再 `setScreen()` 一次，环没有出口，只能等栈耗尽。
+`-platform windows` 上 `setScreen()` 能落地，第二轮进来时终止条件成立，所以同样的代码在
+Windows 上一直是好的。
 
 这也解释了为什么上一轮那些计数器全部"无辜"：环确实不经过 `QApplication::notify`
 （它只在 `notify_helper` 之上）、也不经过控制器/采样窗口，它只在**这一个 widget 的
@@ -6875,6 +6878,14 @@ handle->setScreen(m_placementScreen);
 | `-platform offscreen`（完整套件） | `rc=127`（`0xC00000FD`），716 条 raise | **EXIT=0**，722 条 raise |
 | `--color-sampling-only -platform offscreen`（CI 上那条） | `0xC00000FD`，661 条 raise | **EXIT=0**，692 条 raise |
 | `-platform windows`（完整套件） | EXIT=0 | **EXIT=0** |
+| `ctest -R snow-shot-global-canvas`（这条 exe 的全部 14 个注册条目） | 崩在 #636 | **14/14 passed**（87s） |
+
+补一次回归面：工具栏几何直接相关的那条 exe 也重编跑了
+（`ctest -R floating-toolbar`，17 条）。`drag-tests` / `reverse-drag` / `seam-straddle-drag` /
+`drag-print` / `dpi-transaction-offscreen` 全绿；另有 2 条红
+（`keyboard-focus-windows-tests`、`action-layout-tests`）**做了 A/B**：把这两个文件退回
+`0d52a58d^` 重新编译后它们照样失败，所以是本机既有的前台焦点 / 配置原子写问题，与重入闸无关。
+ctest 输出里的 `***Not Run` 是 exe 没构建，不是失败，别混进判据。
 
 顺带确认：`raise()` / `setting window masks` 这些 "This plugin does not support ..." 警告在
 修完后**照旧刷**，它们只是 offscreen 少几个平台能力，不是症状，不要去"修"它们。
