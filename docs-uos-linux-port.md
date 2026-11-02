@@ -6746,3 +6746,35 @@ QT_PLUGIN_PATH="C:/Qt/5.15.2/msvc2019_64/plugins" \
 QT_QPA_PLATFORM_PLUGIN_PATH="C:/Qt/5.15.2/msvc2019_64/plugins/platforms" \
 ./snow-shot-global-canvas-tests.exe --color-sampling-only -platform offscreen
 ```
+
+### C.11 补充：先修掉的是另一个 bug（模板版本），爆栈仍在
+
+`--color-sampling-only` 之外，不带参数的 `snow-shot-global-canvas-tests` 在本机 offscreen 上
+也会挂；它挂的位置更靠后，而且**在 `-platform windows` 上同样复现**：
+
+```
+rc=1  save test template        # 断言失败，不是崩
+```
+
+`save test template` 对应 `DrawTemplateSettings::setTemplates()` 返回 false。根因不是平台，
+是**跨语言的版本常量漂移**：Rust 侧
+`DRAW_TEMPLATE_SCHEMA_VERSION = 7`
+（`snow_draw_engine_qt/crates/snow-draw-engine-editor/src/draw_template.rs`），
+而 C++ 侧 `normalizeDrawTemplates()` 的上限还写着 6
+（`snow_shot/src/storage/configurationschema.cpp`）。于是引擎刚写出来的模板被 schema
+判成"不支持的未来格式"整条丢掉，`setTemplates` 只能返回 false。这条同时解释了 CI 里
+`560 snow-shot-styled-template-storage-tests` 的失败。
+
+修掉之后（`c4c8108c`）同一个套件不再停在这句断言上，而是继续往下跑到**同一个栈溢出**，
+说明爆栈和模板问题是两件事。修完的模板用例顺带提供了一个更好的复现面：不带参数的套件
+和 `--color-sampling-only` 都能在 40 秒内撞上它。
+
+**新线索**：两次崩溃前 `does not support raise()` 的条数分别是 661（采样变体）和 716
+（完整套件），和"递归深度"同一量级；也就是说每一层递归都在 raise 一个**顶层窗口**。
+而本机 `-platform windows` 上同样的代码路径不崩、也一条 raise 警告都没有。
+下一个假设应当围绕"offscreen 上某个顶层窗口在 `raise()` 之后又被要求 show/activate"，
+并且**每次 show 都要重新 `create()`**（offscreen 的 `create()` 若不落地，就会形成
+`raise → create → show → raise` 的环）。验证方式：给
+`QWidgetPrivate` 不可达，就给 `ScreenshotFloatingToolPaletteWindow::showEvent` /
+`activateDrawing()` / `QWidget::create` 的调用方（`winId()` 调用点）加同一计数器，
+看哪一个在 600+ 层上增长。
