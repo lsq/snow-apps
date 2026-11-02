@@ -2284,7 +2284,14 @@ void quickSaveUsesOnlyConfiguredOutput() {
                     QFileInfo(first.savedPath).suffix() ==
                         ScreenshotImageFileService::extension(
                             ScreenshotImageFileService::formatForKey(format)),
-                "quick save must create the configured directory and use format/name settings");
+                qPrintable(QStringLiteral("quick save must create the configured directory and use "
+                                          "format/name settings: format=%1 stage=%2 error=%3 "
+                                          "saved=%4 expectedDir=%5 dir=%6")
+                               .arg(format)
+                               .arg(static_cast<int>(first.failureStage))
+                               .arg(first.error.isEmpty() ? QStringLiteral("<none>") : first.error,
+                                    first.savedPath, output,
+                                    QFileInfo(first.savedPath).absolutePath())));
         const auto second = save(artifact);
         require(second.succeeded() && first.savedPath != second.savedPath &&
                     QFileInfo(second.savedPath).baseName().endsWith(QStringLiteral("_1")) &&
