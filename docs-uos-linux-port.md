@@ -6549,6 +6549,77 @@ xvfb-run -a --server-args="-screen 0 1280x1024x24" \
 ```
 
 
+
+## 附录 B.1：run 41383823090 基线——用双架构交集把失败切成两堆
+
+上一次基线（附录 B，133 失败）里 x64 作业被 180 分钟上限取消，只能看 arm64 一家。
+这次两个架构都跑完了，于是第一次能做**集合运算**，而不是逐个读断言：
+
+| | 失败数 |
+| --- | --- |
+| x64（这次跑完了，03:34 开工、06:42 出结果；上一次在 180 分钟上限被取消） | 109 / 832 |
+| arm64（03:34 → 05:41） | 113 / 832 |
+| **交集**（两边都红） | **109** |
+| 只在 arm64 红 | 4（`canvas-text-overlay`、`image-split-export`、`screenshot-cursor`、`scrolling-overlay`） |
+| 只在 x64 红 | 0 |
+
+**统计口径的坑**：不能 grep 行内的 `***Failed` 来数——x64 那样只数到 96 条，少 12 条，
+而 ctest 汇总的 `The following tests FAILED` 段是 109 条。下载日志用 `--tail` 截断开头时，
+前段测试的 `***Failed` 行会一起丢掉，所以**唯一可信的口径是末尾那段汇总清单**
+（`grep -A140 "The following tests FAILED"` 再取 `^\s+[0-9]+ - name`）。
+
+这个切法是这次最有用的结论：**109 条与架构无关**，它们只说明"Linux 上的行为和 Windows 不一样"，
+所以任何"再去 x64 上试一次"的排查都是浪费；剩下 4 条才是 aarch64 相关，而且四条的断言形态
+是同一类——**差一个最低位 / 一个物理像素**：
+
+```
+pixel (4, 0) is #8aaa022b, expected #8aaa022a      ← 蓝色通道差 1
+crop guide must cross the selection center at one physical pixel
+cursor patch must map through image pixels into desktop canvas points
+sparse dpr=1.25 rotation=-0.47 zoom=1.37 selected=1 / sparse repaints must preserve pixels outside the exposed region
+```
+
+这是 NEON 与 SSE 在 `round`/`toInt` 上的取整方向差异，不是产品逻辑错。要在 aarch64 上绿，
+得让断言按"两条产品路径互相一致"或"允许 ±1"来写，而不是钉死某个值——和附录 B 第 3 类同一个处置。
+
+### 这轮在 CI 上变绿的条目，以及一条"修了还红"的
+
+| ctest 条目 | 上一次 | 这一次 |
+| --- | --- | --- |
+| `snow-shot-global-canvas-tests`（#579） | `***Failed`（`save test template`） | **Passed** |
+| `snow-shot-global-canvas-color-sampling-tests`（#581） | `***SegmentFault` | **Passed** |
+| `snow-shot-pinned-template-dialog-tests`（#748） | `***Failed` | **Passed** |
+| `snow-shot-styled-template-storage-tests`（#560） | `***Failed` | 仍红 → 本次已修（见下） |
+
+`#560` 修完仍红的原因值得记一笔：它红在**测试自身的漂移守卫**上——
+
+```
+storage compatibility coverage should follow the engine's current template version
+```
+
+这条断言把"引擎写出的版本号"钉成 `6`，同时接受 `1..6`、把 `7` 列为"未来格式"。
+c4c8108c 把 C++ 上限提到 7 之后，这三处字面量就全错了。**光改 schema 侧会永远红，
+光改第一条断言又会让它接受一个校验器其实拒绝的版本**，所以三处必须从同一个常量派生
+（`engineTemplateVersion`，对应 Rust 的 `DRAW_TEMPLATE_SCHEMA_VERSION`）。
+反向验证：常量退回 6 时恰好红在这一条，改回 7 后
+`--styled-template-storage-only -platform offscreen` 绿。
+
+### 失败总数 133 → 113
+
+比上一轮少 20 条。分族看（同一口径，ctest 汇总清单）：
+
+| 族 | 附录 B（run 41264674368） | 本次（run 41383823090） |
+| --- | --- | --- |
+| `adqt-*` | 11 | **5**（button-lifetime、button-signal-lifetime、popup-hover-geometry、select、widget-diagnostics） |
+| `snow-shot-mcp-*` | 3 | **4**（多了 `mcp-application-tests`） |
+| `snow-canvas-*` | 10 | 10（同 10 条，一条不多一条不少） |
+
+所以不是"上一轮的失败都是连带现象"。`adqt-*` 少了 6 条、`mcp-*` 还多了 1 条，说明这批
+（附录 B 里首行是 `(无输出)` 或 `Traceback` 的那些）**状态不稳定，会随运行而变**：
+它们失败时连断言都不打印，更像是进程级问题（崩溃、超时、Python 夹具没起来）而不是产品断言。
+处置这类用例的正确顺序是先让它稳定复现，而不是去猜断言；逐条"修" 133 条里每一条的性价比，
+远低于先把交集 109 条按附录 B 的 5 类批量处置。
+
 ## 附录 C：Qt 5 崩溃栈的符号化与三条已确认的框架差异
 
 Linux 上 13 个 `***Exception: SegFault` 之前一直是黑箱：Qt 5 开源版不带 PDB，
@@ -6890,72 +6961,63 @@ ctest 输出里的 `***Not Run` 是 exe 没构建，不是失败，别混进判�
 顺带确认：`raise()` / `setting window masks` 这些 "This plugin does not support ..." 警告在
 修完后**照旧刷**，它们只是 offscreen 少几个平台能力，不是症状，不要去"修"它们。
 
-## 附录 B.1：run 41383823090 基线——用双架构交集把失败切成两堆
+### C.12 Linux 上的窗口元素选择器仍是 stub（3 条 ctest 因此不再注册）
 
-上一次基线（附录 B，133 失败）里 x64 作业被 180 分钟上限取消，只能看 arm64 一家。
-这次两个架构都跑完了，于是第一次能做**集合运算**，而不是逐个读断言：
+`window-element-api`、`selector-phased`、`selector-lifecycle` 这三条 ctest 是**同一个 exe**
+（`snow-shot-window-element-api-tests` 加 `--selector-only` / `--selector-lifecycle-only`），
+三条在 CI 上一起红，报的都是 `initial selector refresh failed`。
 
-| | 失败数 |
+顺着断言往下读一层就能看到它们同源：
+
+```
+snow_shot/src/presentation/selector/screenshotselectorserviceclient.cpp:21
+    #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)      ← 真实实现
+    ...
+    #else
+    // Native selector unavailable on unsupported platforms.
+    bool ScreenshotSelectorServiceClient::hasService() const { return false; }
+    bool ScreenshotSelectorServiceClient::ensureService()            { return false; }
+    bool ScreenshotSelectorServiceClient::startRefresh(...)          { return false; }
+```
+
+也就是说 **Linux 走的是 stub 分支，`startRefresh()` 恒为 false**，三条测试断言的是一个
+不存在的后端，不是产品在 Linux 上算错了。
+
+**这不是"忘了加 ifdef"，而是 C ABI 还没有 X11 这个后端**：
+
+| 层 | 现状 |
 | --- | --- |
-| x64（这次跑完了，03:34 开工、06:42 出结果；上一次在 180 分钟上限被取消） | 109 / 832 |
-| arm64（03:34 → 05:41） | 113 / 832 |
-| **交集**（两边都红） | **109** |
-| 只在 arm64 红 | 4（`canvas-text-overlay`、`image-split-export`、`screenshot-cursor`、`scrolling-overlay`） |
-| 只在 x64 红 | 0 |
+| `snow-ui-selector/src/linux.rs` | x11rb 后端**已实现**（`refresh`/`refresh_excluding_ids`/`refresh_with_displays`/`release_cache`） |
+| `snow-ui-selector-c`（C ABI） | backend 枚举只有 `Uia`/`Msaa`/`Accessibility`，没有 X11；`lib.rs` 只有 `cfg(target_os = "macos")` 与 `not(macos)` 两条 |
+| `snow_ui_selector.h` | `SnowUiSelectorBackend` 只有 UIA/MSAA/ACCESSIBILITY |
+| Qt 侧 | `#if defined(Q_OS_WIN) \|\| defined(Q_OS_MACOS)`，其余平台 stub |
 
-**统计口径的坑**：不能 grep 行内的 `***Failed` 来数——x64 那样只数到 96 条，少 12 条，
-而 ctest 汇总的 `The following tests FAILED` 段是 109 条。下载日志用 `--tail` 截断开头时，
-前段测试的 `***Failed` 行会一起丢掉，所以**唯一可信的口径是末尾那段汇总清单**
-（`grep -A140 "The following tests FAILED"` 再取 `^\s+[0-9]+ - name`）。
+所以要真正接上，得跨三层改：C ABI 加 `SNOW_UI_SELECTOR_BACKEND_X11` 并在 `lib.rs` 里把它
+分派到 `linux.rs`，再把 Qt 侧的门控打开并处理"X11 没有 hwnd，用 XID"这层差异。这是功能开发，
+不是断言修正，不该混在一次修测试的提交里。
 
-这个切法是这次最有用的结论：**109 条与架构无关**，它们只说明"Linux 上的行为和 Windows 不一样"，
-所以任何"再去 x64 上试一次"的排查都是浪费；剩下 4 条才是 aarch64 相关，而且四条的断言形态
-是同一类——**差一个最低位 / 一个物理像素**：
+**处置**：三条 native 契约改在 `if(WIN32 OR APPLE)` 里 `add_test`，Linux 不再注册；
+同一 exe 的三个设置类入口（`--shortcut-exit-confirmation-settings-only`、
+`--auto-qr-settings-only`、`--guide-settings-only`）保持全平台注册，它们在 Linux 上一直是绿的。
+
+**这一步踩到的坑（比结论本身更值得记）**：只把 `add_test()` 包进条件是不够的。下面这段
+`set_tests_properties()` 的列表里还列着那三个名字，而对**从未 add 过**的测试调用
+`set_tests_properties()` 是 **configure 阶段的硬错误**：
 
 ```
-pixel (4, 0) is #8aaa022b, expected #8aaa022a      ← 蓝色通道差 1
-crop guide must cross the selection center at one physical pixel
-cursor patch must map through image pixels into desktop canvas points
-sparse dpr=1.25 rotation=-0.47 zoom=1.37 selected=1 / sparse repaints must preserve pixels outside the exposed region
+CMake Error at snow_shot/CMakeLists.txt:3622 (set_tests_properties):
+  set_tests_properties Can not find test to add properties to:
+  snow-shot-window-element-api-tests
 ```
 
-这是 NEON 与 SSE 在 `round`/`toInt` 上的取整方向差异，不是产品逻辑错。要在 aarch64 上绿，
-得让断言按"两条产品路径互相一致"或"允许 ±1"来写，而不是钉死某个值——和附录 B 第 3 类同一个处置。
+如果就这么推上去，Linux 的 `Configure` 步骤会直接失败，比原来红三条严重得多。
+抓到它的办法是把条件临时写成 `if(FALSE)` **在本机模拟 Linux 分支**——本机只能 configure
+Windows 分支，这正是"未被解析的代码面=盲区"的又一次实例。修法是把三个名字收进
+`_snow_shot_native_selector_tests` 变量，条件成立才填值，`set_tests_properties()` 展开它。
 
-### 这轮在 CI 上变绿的条目，以及一条"修了还红"的
+双向判据：
 
-| ctest 条目 | 上一次 | 这一次 |
+| 条件 | configure | 注册条目 |
 | --- | --- | --- |
-| `snow-shot-global-canvas-tests`（#579） | `***Failed`（`save test template`） | **Passed** |
-| `snow-shot-global-canvas-color-sampling-tests`（#581） | `***SegmentFault` | **Passed** |
-| `snow-shot-pinned-template-dialog-tests`（#748） | `***Failed` | **Passed** |
-| `snow-shot-styled-template-storage-tests`（#560） | `***Failed` | 仍红 → 本次已修（见下） |
-
-`#560` 修完仍红的原因值得记一笔：它红在**测试自身的漂移守卫**上——
-
-```
-storage compatibility coverage should follow the engine's current template version
-```
-
-这条断言把"引擎写出的版本号"钉成 `6`，同时接受 `1..6`、把 `7` 列为"未来格式"。
-c4c8108c 把 C++ 上限提到 7 之后，这三处字面量就全错了。**光改 schema 侧会永远红，
-光改第一条断言又会让它接受一个校验器其实拒绝的版本**，所以三处必须从同一个常量派生
-（`engineTemplateVersion`，对应 Rust 的 `DRAW_TEMPLATE_SCHEMA_VERSION`）。
-反向验证：常量退回 6 时恰好红在这一条，改回 7 后
-`--styled-template-storage-only -platform offscreen` 绿。
-
-### 失败总数 133 → 113
-
-比上一轮少 20 条。分族看（同一口径，ctest 汇总清单）：
-
-| 族 | 附录 B（run 41264674368） | 本次（run 41383823090） |
-| --- | --- | --- |
-| `adqt-*` | 11 | **5**（button-lifetime、button-signal-lifetime、popup-hover-geometry、select、widget-diagnostics） |
-| `snow-shot-mcp-*` | 3 | **4**（多了 `mcp-application-tests`） |
-| `snow-canvas-*` | 10 | 10（同 10 条，一条不多一条不少） |
-
-所以不是"上一轮的失败都是连带现象"。`adqt-*` 少了 6 条、`mcp-*` 还多了 1 条，说明这批
-（附录 B 里首行是 `(无输出)` 或 `Traceback` 的那些）**状态不稳定，会随运行而变**：
-它们失败时连断言都不打印，更像是进程级问题（崩溃、超时、Python 夹具没起来）而不是产品断言。
-处置这类用例的正确顺序是先让它稳定复现，而不是去猜断言；逐条"修" 133 条里每一条的性价比，
-远低于先把交集 109 条按附录 B 的 5 类批量处置。
+| `if(WIN32 OR APPLE)`（本机真实） | 成功 | 6 条（3 native + 3 settings） |
+| `if(FALSE)`（模拟 Linux） | **成功** | 3 条（只剩 settings） |
