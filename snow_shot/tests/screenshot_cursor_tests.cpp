@@ -77,8 +77,28 @@ void runScreenshotCursorTests() {
         const auto cleanPointer = display.image.constBits();
         const auto patchPointer = display.cursorPatch.constBits();
         const auto rect = screenshotCursorCanvasRect(display);
-        requireCursor(rect == QRectF(-40 + 60 / scale, -20 + 45 / scale, 16 / scale, 24 / scale),
-                      "cursor patch must map through image pixels into desktop canvas points");
+        // Not `rect == QRectF(...)`: the product computes `origin + pixel * scale`
+        // and a compiler that contracts that into an FMA (GCC/Clang at -O2 on
+        // x86-64 and on aarch64) rounds once instead of twice, which moves the
+        // last bit. Bit-exact equality therefore asserts the FPU, not the
+        // mapping; any real mapping bug is off by whole pixels.
+        const QRectF expected(-40 + 60 / scale, -20 + 45 / scale, 16 / scale, 24 / scale);
+        requireCursor(qAbs(rect.x() - expected.x()) < 1e-6 &&
+                          qAbs(rect.y() - expected.y()) < 1e-6 &&
+                          qAbs(rect.width() - expected.width()) < 1e-6 &&
+                          qAbs(rect.height() - expected.height()) < 1e-6,
+                      qPrintable(QStringLiteral("cursor patch must map through image pixels into "
+                                                "desktop canvas points: scale=%1 actual=[%2,%3 "
+                                                "%4x%5] expected=[%6,%7 %8x%9]")
+                                     .arg(scale)
+                                     .arg(rect.x(), 0, 'f', 9)
+                                     .arg(rect.y(), 0, 'f', 9)
+                                     .arg(rect.width(), 0, 'f', 9)
+                                     .arg(rect.height(), 0, 'f', 9)
+                                     .arg(expected.x(), 0, 'f', 9)
+                                     .arg(expected.y(), 0, 'f', 9)
+                                     .arg(expected.width(), 0, 'f', 9)
+                                     .arg(expected.height(), 0, 'f', 9)));
         const auto queued = screenshotDisplayImageSource(display, true);
         for (bool visible : {false, true, false, true}) {
             session.cursorVisible = visible;

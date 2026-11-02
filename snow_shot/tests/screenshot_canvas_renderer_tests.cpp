@@ -3167,6 +3167,10 @@ void scrollingCropGuideCentersAndClearsAcrossDisplayDprs() {
     SnowCanvasWidget canvas;
     ScreenshotCanvasRenderer renderer(canvas);
     renderer.setRenderMode(ScreenshotCanvasRenderer::RenderMode::ScrollingCapture);
+    // Reported only after the pixel scan: a bare equality failure here says
+    // nothing about which DPR, orientation or pixel disagreed, and the loop
+    // covers 4 combinations per call.
+    QString guideMismatch;
     for (const auto orientation : {Qt::Horizontal, Qt::Vertical}) {
         for (const qreal dpr : {1.0, 1.25, 1.5, 1.75, 2.0}) {
             for (int display = 0; display < 2; ++display) {
@@ -3187,16 +3191,32 @@ void scrollingCropGuideCentersAndClearsAcrossDisplayDprs() {
                 };
                 renderer.setScrollingResultPreview(source, selection, orientation);
                 const QImage output = paint();
-                for (int y = 0; y < output.height(); ++y) {
+                for (int y = 0; y < output.height() && guideMismatch.isEmpty(); ++y) {
                     for (int x = 0; x < output.width(); ++x) {
                         const int sourceX = x + display * 40;
                         const bool onGuide =
                             orientation == Qt::Horizontal ? y == 30 : sourceX == 40;
-                        require(output.pixelColor(x, y) ==
-                                    (onGuide ? QColor(Qt::red) : source.pixelColor(sourceX, y)),
-                                "crop guide must cross the selection center at one physical pixel");
+                        const QColor expectedPixel =
+                            onGuide ? QColor(Qt::red) : source.pixelColor(sourceX, y);
+                        if (output.pixelColor(x, y) == expectedPixel)
+                            continue;
+                        guideMismatch =
+                            QStringLiteral("crop guide must cross the selection center at one "
+                                           "physical pixel: orientation=%1 dpr=%2 display=%3 "
+                                           "at=(%4,%5) onGuide=%6 actual=%7 expected=%8")
+                                .arg(orientation == Qt::Horizontal ? QStringLiteral("horizontal")
+                                                                   : QStringLiteral("vertical"))
+                                .arg(dpr)
+                                .arg(display)
+                                .arg(x)
+                                .arg(y)
+                                .arg(onGuide ? 1 : 0)
+                                .arg(output.pixelColor(x, y).name(QColor::HexArgb),
+                                     expectedPixel.name(QColor::HexArgb));
+                        break;
                     }
                 }
+                require(guideMismatch.isEmpty(), qPrintable(guideMismatch));
                 renderer.setScrollingResultPreview(source, selection);
                 require(paint() == source.copy(display * 40, 0, 40, 60),
                         "changing to hover with the same image must remove the crop guide");
