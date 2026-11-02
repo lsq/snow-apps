@@ -4485,6 +4485,22 @@ void drawUncachedTextPhase(QPainter& painter, const SnowSceneDisplayItem& item,
     painter.restore();
 }
 
+// Reports how many pixels two renders disagree on, so a failed "the worker
+// rendered the same thing" check says whether the layouts differ everywhere or
+// on a handful of edge pixels.
+qsizetype differingPixelCount(const QImage& left, const QImage& right) {
+    if (left.size() != right.size() || left.format() != right.format())
+        return -1;
+    qsizetype differing = 0;
+    for (int y = 0; y < left.height(); ++y) {
+        for (int x = 0; x < left.width(); ++x) {
+            if (left.pixel(x, y) != right.pixel(x, y))
+                ++differing;
+        }
+    }
+    return differing;
+}
+
 QImage renderTextCacheSample(const SnowSceneDisplayItem& item, const QFont& font, double zoom,
                              bool cached, bool strips, qreal dpr = 1.0,
                              const QPointF& position = QPointF(350.0, 220.0),
@@ -4753,17 +4769,33 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
     auto ready = workerReady.get_future();
     std::promise<void> fontsChanged;
     auto changed = fontsChanged.get_future();
-    std::atomic<bool> workerPassed = false;
+    // Every part of the worker's verdict is recorded and reported separately:
+    // "workerPassed == false" says nothing about *which* of the four
+    // observations disagreed, and the four have completely different causes
+    // (a different layout from the GUI thread vs. a cache that was not
+    // invalidated).
+    struct WorkerObservation {
+        bool coldMatches = false;
+        bool rebuiltMatches = false;
+        qsizetype coldPixelsDiffering = 0;
+        qsizetype rebuildPixelsDiffering = 0;
+        RenderCacheDiagnostics cold;
+        RenderCacheDiagnostics after;
+    } observed;
     std::thread worker([&] {
         clearRenderCacheForCurrentThread();
         const auto cold = renderTextCacheSample(item, font, 1.0, true, false);
-        const auto first = renderCacheDiagnosticsForCurrentThread();
+        observed.cold = renderCacheDiagnosticsForCurrentThread();
+        observed.coldMatches = cold == expected;
+        if (!observed.coldMatches)
+            observed.coldPixelsDiffering = differingPixelCount(cold, expected);
         workerReady.set_value();
         changed.wait();
         const auto rebuilt = renderTextCacheSample(item, font, 1.0, true, false);
-        const auto after = renderCacheDiagnosticsForCurrentThread();
-        workerPassed = cold == expected && rebuilt == expected && first.builds == 3 &&
-                       first.hits == 0 && after.builds == 3 && after.hits == 0;
+        observed.after = renderCacheDiagnosticsForCurrentThread();
+        observed.rebuiltMatches = rebuilt == expected;
+        if (!observed.rebuiltMatches)
+            observed.rebuildPixelsDiffering = differingPixelCount(rebuilt, expected);
         clearRenderCacheForCurrentThread();
     });
     ready.wait();
@@ -4775,7 +4807,25 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
             "font database changes must invalidate GUI layouts");
     fontsChanged.set_value();
     worker.join();
-    require(workerPassed, "font database changes must invalidate worker layouts on their thread");
+    require(observed.rebuiltMatches && observed.coldMatches,
+            qPrintable(QStringLiteral("worker layouts must match the GUI thread: cold=%1 "
+                                      "(%2 px) rebuilt=%3 (%4 px)")
+                           .arg(observed.coldMatches ? 1 : 0)
+                           .arg(observed.coldPixelsDiffering)
+                           .arg(observed.rebuiltMatches ? 1 : 0)
+                           .arg(observed.rebuildPixelsDiffering)));
+    require(observed.cold.builds == 3 && observed.cold.hits == 0,
+            qPrintable(QStringLiteral("the worker's first render must build all three phases: "
+                                      "builds=%1 hits=%2 entries=%3")
+                           .arg(observed.cold.builds)
+                           .arg(observed.cold.hits)
+                           .arg(observed.cold.entries)));
+    require(observed.after.builds == 3 && observed.after.hits == 0,
+            qPrintable(QStringLiteral("font database changes must invalidate worker layouts "
+                                      "on their thread: builds=%1 hits=%2 entries=%3")
+                           .arg(observed.after.builds)
+                           .arg(observed.after.hits)
+                           .arg(observed.after.entries)));
 }
 
 SnowTextStyle

@@ -2909,11 +2909,24 @@ void pinnedTextWrapUsesVisibleClient() {
         const QRectF client(QPointF(),
                             QSizeF(window.currentNativeGeometry().size()) / geometryScale);
         const QRectF viewBounds = canvas->canvasToViewTransform().mapRect(*bounds);
+        const auto describeRect = [](const QRectF& rect) {
+            return QStringLiteral("[%1,%2 %3x%4]")
+                .arg(rect.left(), 0, 'f', 4)
+                .arg(rect.top(), 0, 'f', 4)
+                .arg(rect.width(), 0, 'f', 4)
+                .arg(rect.height(), 0, 'f', 4);
+        };
         require(qAbs(viewBounds.left() - client.left()) < 0.0001 &&
                     qAbs(viewBounds.top() - client.top()) < 0.0001 &&
                     qAbs(viewBounds.right() - client.right()) < 0.0001 &&
                     qAbs(viewBounds.bottom() - client.bottom()) < 0.0001,
-                "pinned text bounds match the exact client extent at the current DPR and zoom");
+                qPrintable(QStringLiteral("pinned text bounds match the exact client extent at "
+                                          "the current DPR and zoom: view=%1 client=%2 "
+                                          "dpr=%3 geometryScale=%4 native=%5")
+                               .arg(describeRect(viewBounds), describeRect(client))
+                               .arg(canvas->devicePixelRatioF())
+                               .arg(geometryScale)
+                               .arg(describeRect(window.currentNativeGeometry()))));
         return *bounds;
     };
     const QRectF bounds = verifyClientBounds();
@@ -21948,7 +21961,20 @@ void pinnedImageStitchingTextAndDeferredContent() {
     require(frozen.source.isValid() && frozen.error.isEmpty() &&
                 snow_shot::presentation::collageResourceUsage().reservedBytes ==
                     captureBaseline + decoded->image.sizeInBytes(),
-            "an OCR stitching source accounts for its raster before joining the import queue");
+            qPrintable(QStringLiteral("an OCR stitching source accounts for its raster before "
+                                      "joining the import queue: valid=%1 error=[%2] "
+                                      "reserved=%3 baseline=%4 rasterDelta=%5 imageBytes=%6 "
+                                      "source=%7")
+                           .arg(frozen.source.isValid() ? 1 : 0)
+                           .arg(frozen.error)
+                           .arg(snow_shot::presentation::collageResourceUsage().reservedBytes)
+                           .arg(captureBaseline)
+                           .arg(snow_shot::presentation::collageResourceUsage().reservedBytes -
+                                captureBaseline)
+                           .arg(decoded->image.sizeInBytes())
+                           .arg(QStringLiteral("%1x%2")
+                                    .arg(frozen.outputSize.width())
+                                    .arg(frozen.outputSize.height()))));
     const QImage before = pinnedStitchingPixels(frozen, fixture.selection);
     decoded->formattedDocument->setPlainText(QStringLiteral("Edited text"));
     waitForUi(20);

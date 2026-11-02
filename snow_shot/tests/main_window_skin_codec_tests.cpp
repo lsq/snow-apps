@@ -87,9 +87,28 @@ void managedQtReader() {
         QImageReader scaledReader(&scaledInput, "PNG");
         scaledReader.setScaledSize(QSize(1023, 511));
         QImage scaled = snow_shot::image_codec::readManagedImage(scaledReader);
-        require(scaled == expected.scaled(QSize(1023, 511), Qt::IgnoreAspectRatio,
-                                          Qt::SmoothTransformation),
-                "managed decoding must preserve the reader's fallback scaling result");
+        const QImage scaledReference =
+            expected.scaled(QSize(1023, 511), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        qsizetype differing = 0;
+        if (scaled.size() == scaledReference.size()) {
+            for (int y = 0; y < scaled.height(); ++y) {
+                for (int x = 0; x < scaled.width(); ++x) {
+                    if (scaled.pixel(x, y) != scaledReference.pixel(x, y))
+                        ++differing;
+                }
+            }
+        }
+        require(scaled == scaledReference,
+                qPrintable(QStringLiteral("managed decoding must preserve the reader's fallback "
+                                          "scaling result: actual=%1x%2/%3 reference=%4x%5/%6 "
+                                          "differingPixels=%7")
+                               .arg(scaled.width())
+                               .arg(scaled.height())
+                               .arg(static_cast<int>(scaled.format()))
+                               .arg(scaledReference.width())
+                               .arg(scaledReference.height())
+                               .arg(static_cast<int>(scaledReference.format()))
+                               .arg(differing)));
         if (scaled.sizeInBytes() >= 1024 * 1024) {
             midpoint = scaled.constBits() + scaled.sizeInBytes() / 2;
             scaled = {};

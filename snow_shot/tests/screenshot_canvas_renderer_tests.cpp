@@ -5003,6 +5003,9 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
                     solidPixel(palette.highlightedText().color(), selectedBackground));
             }
             bool matchesDirect = true;
+            qsizetype differenceViolations = 0;
+            qsizetype solidViolations = 0;
+            qsizetype edgeViolations = 0;
             if (cached != direct) {
                 qsizetype differingPixels = 0;
                 int maximumDifference = 0;
@@ -5037,6 +5040,12 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
                             }
                         }
                         matchesDirect &= difference <= 1 && !solid && edge;
+                        if (difference > 1)
+                            ++differenceViolations;
+                        if (solid)
+                            ++solidViolations;
+                        if (!edge)
+                            ++edgeViolations;
                     }
                 }
                 if (!matchesDirect) {
@@ -5047,7 +5056,9 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
                               << cached.pixelColor(first).name(QColor::HexArgb).toStdString()
                               << " direct="
                               << direct.pixelColor(first).name(QColor::HexArgb).toStdString()
-                              << '\n';
+                              << " difference_violations=" << differenceViolations
+                              << " solid_violations=" << solidViolations
+                              << " edge_violations=" << edgeViolations << '\n';
                     const auto items = layer.scene()->items();
                     const auto glyph =
                         std::find_if(items.begin(), items.end(),
