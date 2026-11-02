@@ -5069,9 +5069,25 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
                     }
                 }
                 if (!matchesDirect) {
+                    // Which side drew less ink? A cache that misses paints too
+                    // little, one that reuses a stale raster paints in the wrong
+                    // place, and the two need different fixes. The dpr=2 run
+                    // reports 554 differing pixels; this count says whether the
+                    // cached path over- or under-inked.
+                    qsizetype cachedInk = 0;
+                    qsizetype directInk = 0;
+                    for (int y = 0; y < cached.height(); ++y) {
+                        for (int x = 0; x < cached.width(); ++x) {
+                            if (cached.pixelColor(x, y) != QColor(Qt::white))
+                                ++cachedInk;
+                            if (direct.pixelColor(x, y) != QColor(Qt::white))
+                                ++directInk;
+                        }
+                    }
                     std::cerr << "OCR cached/direct mismatch: mode=" << static_cast<int>(rendering)
                               << " dpr=" << dpr << " pixels=" << differingPixels
                               << " max_channel_difference=" << maximumDifference
+                              << " ink cached=" << cachedInk << " direct=" << directInk
                               << " first=" << first.x() << ',' << first.y() << " cached="
                               << cached.pixelColor(first).name(QColor::HexArgb).toStdString()
                               << " direct="
