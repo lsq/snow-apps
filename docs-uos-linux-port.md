@@ -6695,3 +6695,54 @@ re-parent 回自己的 host**。`takeContentWidget()` 只清了 popover 这边�
 
 判据写法：可见性要求保留给所有平台，激活要求只留给真实平台（本仓库里就是
 `--hide-to-top-native-only -platform windows` 那个变体）。
+
+### C.11 未结案：`snow-shot-global-canvas-color-sampling-tests` 在 offscreen 上爆栈
+
+状态：**未修**，但定性已经足够，留给下一轮。
+
+现象与判据：
+
+| 平台 | 结果 |
+| --- | --- |
+| `-platform windows`（本机） | 通过，EXIT=0 |
+| `-platform offscreen`（本机） | `0xC00000FD` 栈溢出，退出码 127，崩前刷 661 次 `does not support raise()` |
+| Linux arm64 CI（xcb + `-platform offscreen`） | `***Exception: SegFault`，日志里同样是 storage 初始化后紧跟一条 `does not support raise()` |
+
+也就是说：**这不是 Windows-offscreen 的本地怪癖，CI 上同一个用例同样崩**，只是 Linux 上
+表现为 SIGSEGV 而不是 `STATUS_STACK_OVERFLOW`。所以它必须修，不能按"只在本机复现"跳过。
+
+已排除的假设（都做过实测探针，探针已还原）：
+
+1. **不是 `QApplication::notify` 嵌套**。把测试里的 `QApplication` 换成
+   `notify()` 带深度计数的子类，整轮下来深度最大只有 2。所以事件重入不是元凶。
+2. **不是控制器/浮动工具栏自我重入**。在 `placeToolbar` / `updateGeometry` /
+   `resizeEvent` / `Session::event` / `prepareForDisplay` / `commitGeometryUpdate` /
+   `refreshGeometryForVisibleContent` / `handlePaletteContentChange` 上加共享深度计数器，
+   最大深度 3；再给 `moveContentTo` / `setPlacementContext` 加"深度>6 就返回"的硬闸，
+   一次都没触发，崩溃照旧。
+3. **不是采样窗口自己重入**。`ScreenshotCanvasColorSamplerWindow::updateSample` 与
+   `paintEvent` 的深度计数一次都没超过 1。
+4. 栈指针采样（下面这套工具）显示栈是**一路下降到接近栈底**才撞上守卫页，也就是真·深递归，
+   不是单帧巨型 `alloca`。
+
+排查工具（都在 `.workbuddy/qt5-port/`，不入库）：`dump-on-crash.ps1` 现在能打出
+`EXCEPTION_RECORD.ExceptionInformation[0..1]`（读/写 + 目标地址），
+`stack-any-dump.py` 能按线程号和 fault rip 符号化栈。**这些都不够用**，因为栈溢出的那个
+dump 没有可用的展开信息（`MiniDumpWriteDump` 带异常流时会返回
+`0x80070006 ERROR_INVALID_HANDLE`，只能退化成不带异常流的 dump）。
+
+真正有效的下一步是把"最深栈点采样"做完整：在测试里起一个线程，`SuspendThread` +
+`GetThreadContext` 采主线程，**只在 RSP 创新低时**把 `(rsp, rip)` 写进文件，进程崩掉之后
+再离线符号化。这一轮已经能拿到 ~21 个下降点、深度约 500 KB，最深处落在 exe 之外的一个
+模块里，但因为 dump 里的模块尺寸与现场不一致，符号化对不准——需要把模块路径一起写出来
+（或直接用现场的 PDB 按 RVA 解析），才能定位到具体函数。
+
+复现命令（本机）：
+
+```
+cd build/windows-qt5-tests/snow_shot/test-bin
+PATH="/c/Qt/5.15.2/msvc2019_64/bin:$PATH" \
+QT_PLUGIN_PATH="C:/Qt/5.15.2/msvc2019_64/plugins" \
+QT_QPA_PLATFORM_PLUGIN_PATH="C:/Qt/5.15.2/msvc2019_64/plugins/platforms" \
+./snow-shot-global-canvas-tests.exe --color-sampling-only -platform offscreen
+```
