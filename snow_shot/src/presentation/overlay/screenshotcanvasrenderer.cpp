@@ -974,11 +974,20 @@ class ScreenshotOcrGraphicsTextItem final : public QGraphicsItem {
         const QRect pixels = bounds.adjusted(-1.0, -1.0, 1.0, 1.0).toAlignedRect();
         const QTransform localDevice = device * QTransform::fromTranslate(-pixels.x(), -pixels.y());
         if (device.type() <= QTransform::TxScale) {
-            // Qt rounds the original clip corners before building its raster clip. Re-centering
-            // a cache can change floating-point addition around a half pixel and clip a whole
-            // selection row. Preserve direct painting when that integer clip would differ.
+            // Qt rounds the clip outward to whole device pixels (floor on left/top, ceil on
+            // right/bottom) before building its raster clip. Re-centering a cache re-runs that
+            // rounding on values shifted by a whole number of pixels, and the shifted sum can
+            // land on the other side of a boundary: at dpr 2 under a 1.25 canvas transform the
+            // clip comes out 551x45 for direct painting and 551x46 for the cache, so the cache
+            // paints one whole row of selection highlight that the direct path leaves empty.
+            // Compare the rounded clips, since `toPoint()` rounds to nearest and cannot see a
+            // ceil-level difference at all; keep the corner check for what it still catches.
             const QRectF clip = layout.boundingRect();
-            if (device.map(clip.topLeft()).toPoint() - pixels.topLeft() !=
+            const QRect directClip = device.mapRect(clip).toAlignedRect();
+            const QRect cachedClip =
+                localDevice.mapRect(clip).toAlignedRect().translated(pixels.topLeft());
+            if (directClip != cachedClip ||
+                device.map(clip.topLeft()).toPoint() - pixels.topLeft() !=
                     localDevice.map(clip.topLeft()).toPoint() ||
                 device.map(clip.bottomRight()).toPoint() - pixels.topLeft() !=
                     localDevice.map(clip.bottomRight()).toPoint()) {
