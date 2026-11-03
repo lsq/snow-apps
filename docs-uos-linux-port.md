@@ -7321,3 +7321,47 @@ Qt5 分支同一写法）后 `expectedFmt=6 == paintedFmt=6`、`differing=0`。
   布局相同时仍要求逐字节相等（这样 Qt6 的严格性一点没松）。
 - 折布局会长出额外的 `QImage` 副本，`checkRelease()` 判的是"释放后页已归还"，副本还活着
   就判不过 ⇒ 参考图必须放进内层作用域，让它在 `checkRelease()` 之前析构。
+
+#### 9.6.60 调色板图像的色彩空间转换：二次量化 + 「小图干脆不转」
+
+`Format_Indexed8` / `Mono`（以及 8 位灰阶）源图做色彩空间转换时，Qt5 与 Qt6 走的不是同一条路：
+
+| | 做法 | 结果 |
+|---|---|---|
+| Qt6 单趟 `convertedToColorSpace(space, format, flags)` | 直接按目标布局展开，**调色板本身被转换** | 精确，分块/整图一致 |
+| Qt5 两步（先转空间再 `convertToFormat`） | 展开 32 位 → 变换 → **重新量化回 8 位索引** | 每个通道可能整体挪一格 |
+
+实测（P3 源 → sRGB，纯色索引项 `(51,102,51)`）：
+
+```
+正确的 P3→sRGB            = (26,103,44)      ← 显式转换调色板 / Qt6
+Qt5 两步走的产物          = (0,102,51)       ← 索引 49 → 13，颜色被重新量化
+未转换（分块路径拿到的）  = (51,102,51)
+```
+
+更阴的一条：**Qt5 这条转换路径对小图是空操作**。同一条源图裁剪成 15 行 / 40 行，`convertedToColorSpace()`
+原样返回（调色板、索引都不动，只换 tag）；整图 263 行才真的转换。所以分块路径（tile view）
+拿到的是"没转"的结果，整图路径拿到的是"转了但被量化过"的结果，两者逐字节都对不上：
+
+```
+row conversion source=3 size=1031x263 target=1 first=1 count=261 row=0
+RP owned   pal49=51 index18=13 bytes=0,102,51,255     ← 整图：转了，被量化
+RP tile    pal49=51 index18=49 bytes=51,102,51,255    ← 分块：根本没转
+```
+
+判据：**只要源 `depth() <= 8` 且要转色彩空间，就先展开到 32 位再转**（等价于 Qt6 的单趟语义），
+不要依赖 Qt5 自己在索引布局里"顺便"处理。两处必须同改，否则夹具与产品各绿一半：
+
+- `snow_canvas_image.cpp` 的 `convertColorAndFormat()` Qt5 分支；
+- `qt_compat.h` 的 `snowImageConvertedToColorSpace()`（测试的参考值就是它算出来的）。
+
+```cpp
+if (image.depth() <= 8) {
+    QImage expanded = image.convertToFormat(QImage::Format_ARGB32);
+    expanded.setColorSpace(image.colorSpace());
+    return expanded.convertedToColorSpace(colorSpace).convertToFormat(format, flags);
+}
+```
+
+改完 `snow-canvas-image-tests` 从"停在 borrowed RGBA rows … color/alpha rounding"变成全绿。
+副作用是好的：展开后再变换是**逐像素**运算，与分块边界无关，tile 路径与整图路径重新一致。

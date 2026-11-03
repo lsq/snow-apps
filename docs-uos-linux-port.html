@@ -8527,7 +8527,6 @@ C:/Qt/5.15.2/msvc2019_64/lib/fonts</code>），不显式装载字体时每个字
 两者差正好一个边距 16。比较前要用 <code>layer-&gt;mapTo(window)</code> 减 <code>canvas-&gt;mapTo(window)</code> 折算；
 注意 <code>mapTo</code> 要求祖先关系，跨容器要用共同祖先（用画布当父参数会触发
 <code>parent must be in parent hierarchy</code> 断言并终止进程）。</p>
-
 <h4>9.6.56 延迟初始化会给载荷<strong>追加</strong>一段，别用整串字节断言"没变"</h4>
 <p><code>pinnedSnapshotRetainsRecognitionBeforeDeferredSetup()</code> 断言 setup 之后 OCR 结果不变，实测：</p>
 <pre><code>EO PROBE same=0 earlyBytes=166 settledBytes=236
@@ -8538,7 +8537,6 @@ EO PROBE settled=&lt;..早期字节..&gt;53524d44 01000000 3d7b226c617465782e.
 <code>settled.startsWith(early)</code>（加 <code>recognition.requests == 0</code>），而不是整串相等；
 整串相等还会在<strong>序列化器规范化空字段</strong>时误报——<code>table-&gt;error/code</code> 是 null 还是
 空串在 JSON 往返后不可区分，序列化器统一折成非 null 空串，测试侧期望必须同样折一次。</p>
-
 <h4>9.6.57 离屏无字体：文本断言在比空气，旋转时直接 abort</h4>
 <p><code>-platform offscreen</code> 的 freetype 没有字体目录。两类后果：</p>
 <ol>
@@ -8550,7 +8548,6 @@ EO PROBE settled=&lt;..早期字节..&gt;53524d44 01000000 3d7b226c617465782e.
 <p>判据：只要夹具里出现文字渲染（哪怕只是复用别人的 OCR 结果），先
 <code>addApplicationFont(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf")</code> +
 <code>QApplication::setFont(...)</code>。看到 <code>qtextureglyphcache.cpp:331</code> 先怀疑字体，别去查几何。</p>
-
 <h4>9.6.58 <code>processEvents()</code> 不排空 <code>DeferredDelete</code></h4>
 <p>关闭一个顶层窗口走的是 <code>deleteLater()</code>；只用
 <code>while (!guard.isNull()) { processEvents(); msleep(1); }</code> 等它，会老老实实等到超时。</p>
@@ -8558,7 +8555,6 @@ EO PROBE settled=&lt;..早期字节..&gt;53524d44 01000000 3d7b226c617465782e.
 </code></pre>
 <p>修法：循环里补 <code>QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete)</code>，
 与 <code>screenshot_pinned_window_tests.cpp</code> 里 <code>processUntilDeleted()</code> 的写法一致。</p>
-
 <h4>9.6.59 垫片丢掉 <code>format</code> 的代价，以及预乘取整差 1 带来的连锁</h4>
 <p><code>convertedToColorSpace(space, format)</code> 在 Qt5 只有单参版本，垫片原本把 format 丢掉。
 后果在一个夹具上暴露得很干净：</p>
@@ -8575,6 +8571,55 @@ Qt5 分支同一写法）后 <code>expectedFmt=6 == paintedFmt=6</code>、<code>
 <li>折布局会长出额外的 <code>QImage</code> 副本，<code>checkRelease()</code> 判的是"释放后页已归还"，副本还活着
   就判不过 ⇒ 参考图必须放进内层作用域，让它在 <code>checkRelease()</code> 之前析构。</li>
 </ul>
+<h4>9.6.60 调色板图像的色彩空间转换：二次量化 + 「小图干脆不转」</h4>
+<p><code>Format_Indexed8</code> / <code>Mono</code>（以及 8 位灰阶）源图做色彩空间转换时，Qt5 与 Qt6 走的不是同一条路：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>做法</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Qt6 单趟 <code>convertedToColorSpace(space, format, flags)</code></td>
+<td>直接按目标布局展开，<strong>调色板本身被转换</strong></td>
+<td>精确，分块/整图一致</td>
+</tr>
+<tr>
+<td>Qt5 两步（先转空间再 <code>convertToFormat</code>）</td>
+<td>展开 32 位 → 变换 → <strong>重新量化回 8 位索引</strong></td>
+<td>每个通道可能整体挪一格</td>
+</tr>
+</tbody>
+</table>
+<p>实测（P3 源 → sRGB，纯色索引项 <code>(51,102,51)</code>）：</p>
+<pre><code>正确的 P3→sRGB            = (26,103,44)      ← 显式转换调色板 / Qt6
+Qt5 两步走的产物          = (0,102,51)       ← 索引 49 → 13，颜色被重新量化
+未转换（分块路径拿到的）  = (51,102,51)
+</code></pre>
+<p>更阴的一条：<strong>Qt5 这条转换路径对小图是空操作</strong>。同一条源图裁剪成 15 行 / 40 行，<code>convertedToColorSpace()</code>
+原样返回（调色板、索引都不动，只换 tag）；整图 263 行才真的转换。所以分块路径（tile view）
+拿到的是"没转"的结果，整图路径拿到的是"转了但被量化过"的结果，两者逐字节都对不上：</p>
+<pre><code>row conversion source=3 size=1031x263 target=1 first=1 count=261 row=0
+RP owned   pal49=51 index18=13 bytes=0,102,51,255     ← 整图：转了，被量化
+RP tile    pal49=51 index18=49 bytes=51,102,51,255    ← 分块：根本没转
+</code></pre>
+<p>判据：<strong>只要源 <code>depth() &lt;= 8</code> 且要转色彩空间，就先展开到 32 位再转</strong>（等价于 Qt6 的单趟语义），
+不要依赖 Qt5 自己在索引布局里"顺便"处理。两处必须同改，否则夹具与产品各绿一半：</p>
+<ul>
+<li><code>snow_canvas_image.cpp</code> 的 <code>convertColorAndFormat()</code> Qt5 分支；</li>
+<li><code>qt_compat.h</code> 的 <code>snowImageConvertedToColorSpace()</code>（测试的参考值就是它算出来的）。</li>
+</ul>
+<pre><code class="language-cpp">if (image.depth() &lt;= 8) {
+    QImage expanded = image.convertToFormat(QImage::Format_ARGB32);
+    expanded.setColorSpace(image.colorSpace());
+    return expanded.convertedToColorSpace(colorSpace).convertToFormat(format, flags);
+}
+</code></pre>
+<p>改完 <code>snow-canvas-image-tests</code> 从"停在 borrowed RGBA rows … color/alpha rounding"变成全绿。
+副作用是好的：展开后再变换是<strong>逐像素</strong>运算，与分块边界无关，tile 路径与整图路径重新一致。</p>
 
 <h2 id="10-工作量-优先级矩阵">10. 工作量 / 优先级矩阵</h2>
 <table>

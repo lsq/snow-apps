@@ -2359,6 +2359,14 @@ using SnowEnterEventInstance = QEvent;
 //     source layout -- the pinned colour-space fixtures compare rendered pixels
 //     against this result, so a semi-transparent pixel read back un-premultiplied
 //     from RGBA8888 never matched the premultiplied value the renderer stored.
+//
+//     One layout does not survive that two-step shape: Qt 5 keeps a paletted (or
+//     plain 8-bit grey/alpha) image in its own layout, so the intermediate of the
+//     conversion is still indexed. Qt 5 then expands, transforms and re-quantises
+//     into a freshly built palette, moving every channel by up to a whole
+//     quantisation step; Qt 6's single pass converts the palette instead. Expanding
+//     these rasters before the conversion is what makes the Qt 5 branch agree with
+//     Qt 6 (and it also fixes Qt 5's habit of leaving small crops untransformed).
 [[nodiscard]] inline QImage snowImageConvertedToColorSpace(const QImage& image,
                                                           const QColorSpace& space,
                                                           QImage::Format format =
@@ -2377,6 +2385,13 @@ using SnowEnterEventInstance = QEvent;
     return image.convertedToColorSpace(space, format);
 #  endif
 #else
+    if (image.depth() <= 8 && format != QImage::Format_Invalid) {
+        // Keep Qt 5 from re-quantising a paletted raster through the conversion;
+        // see the note above.
+        QImage expanded = image.convertToFormat(QImage::Format_ARGB32);
+        expanded.setColorSpace(image.colorSpace());
+        return expanded.convertedToColorSpace(space).convertToFormat(format, flags);
+    }
     const QImage converted = image.convertedToColorSpace(space);
     return format == QImage::Format_Invalid ? converted : converted.convertToFormat(format, flags);
 #endif

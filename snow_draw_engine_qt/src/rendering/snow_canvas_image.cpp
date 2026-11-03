@@ -115,6 +115,21 @@ QImage convertColorAndFormat(const QImage& image, const QColorSpace& colorSpace,
 #if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
     return image.convertedToColorSpace(colorSpace, format, flags);
 #else
+    // Qt 5 keeps a paletted (and 8-bit grey/alpha) image in its own layout across
+    // a colour-space conversion: it expands to 32-bit, transforms, then
+    // re-quantises into a freshly built palette. Every channel can therefore move
+    // by a whole quantisation step -- converting a P3 green (51,102,51) to sRGB
+    // lands on (0,102,51) instead of the correct (26,103,44). Qt 6 converts space
+    // and format in one pass, which is the same thing as converting the palette
+    // itself. Expanding first restores that result and, unlike Qt 5's route, it is
+    // also stable when the caller works on a bounded tile: Qt 5 only re-quantises
+    // rasters above a certain size and returns small crops untransformed, so the
+    // tiled path and the whole-image path disagreed per band.
+    if (image.depth() <= 8) {
+        QImage expanded = image.convertToFormat(QImage::Format_ARGB32);
+        expanded.setColorSpace(image.colorSpace());
+        return expanded.convertedToColorSpace(colorSpace).convertToFormat(format, flags);
+    }
     return image.convertedToColorSpace(colorSpace).convertToFormat(format, flags);
 #endif
 }
