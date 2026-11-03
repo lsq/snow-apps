@@ -1638,6 +1638,13 @@ void setPinnedWindowHovered(ScreenshotPinnedWindow& window, bool hovered);
 void pinnedSelectionRendersCachedOcrInCanvasCoordinates(bool restoreFromStorage = false,
                                                         bool includeOtherResults = false,
                                                         bool initiallyVisible = false) {
+    // The cached line is checked by counting painted pixels, and the offscreen platform has no
+    // fonts of its own: without a loaded family every glyph stays blank and the layer looks empty
+    // even though it renders the cached line in the right place.
+    const int font = QFontDatabase::addApplicationFont(
+        QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
+    require(font >= 0, "cached OCR fixtures must load their bundled font");
+    QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).first(), 12));
     QScreen* screen = QGuiApplication::primaryScreen();
     require(screen != nullptr, "a primary screen is required");
 
@@ -1767,11 +1774,31 @@ void pinnedSelectionRendersCachedOcrInCanvasCoordinates(bool restoreFromStorage 
                 for (const auto& savedLine : presentation->lines)
                     expected << savedLine.text << savedLine.confidence << savedLine.quad
                              << quint8(savedLine.direction == ScreenshotOcrTextDirection::Vertical);
-                if (saved.table)
-                    expected << saved.table->html << saved.table->error << saved.table->code
-                             << saved.table->httpStatus;
+                if (saved.table) {
+                    // The serializer folds a null legacy field into a non-null empty one so that a
+                    // restored snapshot re-serializes to the same bytes; a JSON round trip cannot
+                    // express that difference, so the live snapshot may still hold nulls.
+                    const auto canonical = [](const QString& value) {
+                        return value.isEmpty() ? QStringLiteral("") : value;
+                    };
+                    expected << saved.table->html << canonical(saved.table->error)
+                             << canonical(saved.table->code) << saved.table->httpStatus;
+                }
                 if (saved.qr)
                     expected << saved.qr->contents << saved.qr->error;
+#if SNOW_SHOT_ENABLE_TABLE_RECOGNITION || SNOW_SHOT_ENABLE_LATEX_RECOGNITION
+                // The record ends with the vision-model payload that arrived after this
+                // assertion was written: a marker, its version, a quint32 length and the
+                // JSON selection state.
+                const QByteArray models =
+                    snow_shot::presentation::encodeRecognitionModels(saved);
+                if (!models.isEmpty()) {
+                    expected << snow_shot::presentation::kRecognitionModelPayloadMarker
+                             << snow_shot::presentation::kRecognitionModelPayloadVersion
+                             << quint32(models.size());
+                    expected.writeRawData(models.constData(), int(models.size()));
+                }
+#endif
                 require(record.recognitionResults == expectedPayload,
                         "persisted recognition must keep the Qt 6.11 binary format");
                 QDataStream payload(record.recognitionResults);
@@ -3371,11 +3398,14 @@ void pinnedSnapshotRetainsRecognitionBeforeDeferredSetup() {
     require(!earlyRecord.recognitionResults.isEmpty() && earlyRecord.recognitionVisible,
             "a snapshot before deferred setup must retain OCR results and requested visibility");
     QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+    // Deferred setup initialises the vision-model selection payload, so the record grows a
+    // suffix. The cached OCR in front of it must come back byte for byte -- a rewrite here
+    // would mean setup re-encoded (or re-requested) the recognition instead of restoring it.
     require(session->hasTarget() && session->active() &&
-                window->persistenceSnapshot().recognitionResults ==
-                    earlyRecord.recognitionResults &&
+                window->persistenceSnapshot().recognitionResults.startsWith(
+                    earlyRecord.recognitionResults) &&
                 window->persistenceSnapshot().recognitionVisible && recognition.requests == 0,
-            "recognition setup must restore the overlay without changing or re-requesting OCR");
+            "recognition setup must restore the overlay without rewriting or re-requesting OCR");
     session->invalidate();
     require(window->persistenceSnapshot().recognitionResults.isEmpty(),
             "invalidating initialized recognition must not revive the original cached result");
@@ -4006,7 +4036,9 @@ void pinnedTransformResetPersistsWithoutResize() {
             "the transform reset fixture should expose Reset transform directly below Flip "
             "vertically");
     for (QAction* operation : {flipHorizontal, rotateClockwise}) {
-        const QRect geometry = window->currentNativeGeometry();
+        // The record stores the content rectangle; the widget's own rectangle keeps the reserved
+        // shadow margin around it, so compare the same quantity.
+        const QRect geometry = ScreenshotPinnedWindowTestAccess::contentGeometry(*window);
         operation->trigger();
         if (operation == rotateClockwise) {
             operation->trigger();
@@ -4037,6 +4069,13 @@ void pinnedTransformResetPersistsWithoutResize() {
 }
 
 void transformedPinnedOcrTracksCanvasViewport() {
+    // The offscreen platform has no font of its own. Without a loaded family the freetype engine
+    // falls back to zero-metrics glyphs and rasterising them under the rotated transform trips
+    // Qt's texture glyph cache assertion, which aborts the process rather than failing a check.
+    const int font = QFontDatabase::addApplicationFont(
+        QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
+    require(font >= 0, "transformed OCR fixtures must load their bundled font");
+    QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).first(), 12));
     for (const int shadowWidth : {0, 12}) {
         IdleOcrRecognition recognition;
         auto config = cachedOcrPinConfig(&recognition, shadowWidth);
@@ -4081,7 +4120,11 @@ void transformedPinnedOcrTracksCanvasViewport() {
                 record.imageTransform.map(sourcePoint - config.canvasSourceRect.topLeft());
             const QPointF expected = canvas->canvasToViewTransform().map(transformedPoint);
             auto* item = ocrGlyphItems(layer).front();
+            // The canvas spans the whole window (shadow margin included) while the text layer is
+            // parented to the content widget inside it, so fold the layer origin back in.
             const QPointF actual =
+                QPointF(layer->mapTo(window.data(), QPoint(0, 0)) -
+                        canvas->mapTo(window.data(), QPoint(0, 0))) +
                 layer->viewportTransform().map(item->sceneBoundingRect().center());
             require(item->isVisible() && QLineF(actual, expected).length() < 3.0,
                     "OCR text must follow the image viewport after transforms and restoration");
@@ -18895,12 +18938,15 @@ void pinnedPassiveCorrectionPreservesPublishedPixels() {
 
     // A layered backing-store flush projects the integer-DIP rectangle back to
     // physical pixels. Repair that drift without invalidating the painted image.
-    platform->observed = config.nativeGeometry.adjusted(1, 1, 1, 2);
+    // The platform layer publishes the outer rectangle: the content rectangle plus the reserved
+    // shadow margin on every side. Comparing the two spaces here would only ever measure the
+    // margin itself.
+    const QRect outer = snow_shot::presentation::pinnedOuterRect(config.nativeGeometry);
+    platform->observed = outer.adjusted(1, 1, 1, 2);
     const int applications = platform->applications;
     QEvent update(QEvent::UpdateRequest);
     QCoreApplication::sendEvent(&window, &update);
-    require(platform->observed == config.nativeGeometry &&
-                platform->applications == applications + 1 &&
+    require(platform->observed == outer && platform->applications == applications + 1 &&
                 platform->lastUpdate ==
                     snow_shot::presentation::PinnedWindowPlatform::GeometryUpdate::PreserveContents,
             "passive publication correction must restore geometry without discarding pixels");
@@ -18910,8 +18956,8 @@ void pinnedPassiveCorrectionPreservesPublishedPixels() {
 #ifdef Q_OS_WIN
     WINDOWPOS position{};
     position.hwnd = reinterpret_cast<HWND>(window.winId());
-    position.x = 182;
-    position.y = 182;
+    position.x = outer.x() + 1;
+    position.y = outer.y() + 1;
     position.cx = 11;
     position.cy = 14;
     position.flags = SWP_NOZORDER | SWP_NOACTIVATE;
@@ -18920,10 +18966,11 @@ void pinnedPassiveCorrectionPreservesPublishedPixels() {
     message.message = WM_WINDOWPOSCHANGING;
     message.lParam = reinterpret_cast<LPARAM>(&position);
     snowNativeEventResult result = -1;
+    // The proposal is deliberately both offset and too small: the owned geometry must win.
     require(PinnedWindowWindowsEvents::handle(window, QByteArrayLiteral("windows_generic_MSG"),
                                               &message, &result) &&
                 result == 0 &&
-                QRect(position.x, position.y, position.cx, position.cy) == config.nativeGeometry &&
+                QRect(position.x, position.y, position.cx, position.cy) == outer &&
                 position.flags == (SWP_NOZORDER | SWP_NOACTIVATE),
             "owned native geometry must be handled without Qt re-rounding or invalidating it");
 #endif
