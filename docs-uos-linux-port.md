@@ -7155,3 +7155,42 @@ cached clip = 89,84 551x46     <- 缓存多一整行
 
 判定信号是测试侧的 `ink cached=40376 direct=39825 solid_violations=551`：差异像素全部落在
 "直绘是纯色"的位置 ⇒ 是画错位置，不是舍入误差。**只看差异像素数量会把它误判成容差问题。**
+
+#### 9.6.52 "超长文件名 = 保存失败"这条前提被上游 #2004 拆掉了
+
+`2fe8b10c`（#2004，导出路径支持时间变量）给**每个路径组件**加了截断
+（`composeExportFileName` 上限 248 UTF-8 字节，留 7 字节给 `QSaveFile` 的 `.XXXXXX`）。
+于是"用 300 个 `x` 当文件名制造确定性文件错误"这招彻底失效：写入**成功**，文件名被截到 248。
+三处仍按老前提写的用例因此一起红，而它们的失败文本会把人带偏：
+
+```
+DRAGFAIL PROBE executor reached path=.../snow-shot-drag-pyNagI/xxx…xxx.png exists=1 size=155
+encoding failure is reported
+```
+
+真正的红是最后那句 `wait` 超时（`failed` 永远是 false，因为根本没失败），不是它上面那句
+"failed export must not start native drag" —— 后者是探针里 hoisted executor `throw` 自己造的假象。
+**失败文本先分辨是"断言失败"还是"等待超时"，再决定改产品还是改夹具。**
+
+这条前提现在还能不能造出来？不能，三条路都堵死：
+
+- 非法字符（`/ \ : * ? " < > |`）在 `normalizeFilenameFormat` 就被 `setAutoSaveFilenameFormat` 拒掉；
+- 长度被截断吃掉了；
+- 目标目录由 `automaticDirectories()` 给出，配置目录 `mkpath` 失败还会回落到 Pictures/Documents。
+
+所以三处只能换注入面，各自不同：
+
+| 用例 | 原因 | 新构造 |
+| --- | --- | --- |
+| drag export | 暂存目录写死 `QDir::temp()`，文件名格式来自 schema 校验过的设置 | 新增 `setStagingRoot()`，把根指向一个**普通文件** ⇒ `QTemporaryDir` 建不出来（`ENOTDIR`/`ERROR_DIRECTORY`，两端一致） |
+| pin execution auto-save | `ScreenshotAutomaticSaveRequest` 是结构体字段，**不过 schema** | `filenameFormat = "blocked/name"`，正是保存层对"老配置里带分隔符"的拒绝分支 |
+| shared image export | 同上，但走设置 | 改成断言新行为：组件被**截短**、`copyFile` 仍然发布那个有界名字 |
+
+第二个用例还有个坑值得记：它先 `presentPinnedArtifact(..., request)` 再改
+`automatic.filenameFormat` 并 `request = automatic`，**这是死代码** —— 服务早按值收下了第一份请求。
+探针 `ok=1 path=.../pin-0-4.bmp fmt=blocked/name` 一眼定案：实际保存用的是**第一个**格式。
+把失败构造放在第二处，测试会"看起来改了却毫无变化"。凡是"改完没反应"，先查请求是不是被按值收走。
+
+反向验证：把 drag export 的格式还原成 300 个 `x`，该用例立刻回到 `wait` 超时（红）；
+换回注入根即绿。三组本地全绿：`snow-shot-pinned-drag-export-tests`、
+`snow-shot-pinned-shared-image-export-tests`、`snow-shot-pin-execution-autosave-tests`。
