@@ -19429,12 +19429,19 @@ void pinnedControlledInteractionAndGestures() {
             "fractional drag cancellation must restore the original placement");
     const QPointF deltas[] = {{-40, -20}, {0, -20}, {40, -20}, {40, 0},
                               {40, 20},   {0, 20},  {-40, 20}, {-40, 0}};
+    // The window is the shadow-bearing surface since #1778, so its native rect is
+    // the content plus `pinnedShadowMargin()` on every side. Proportional resizing
+    // constrains the content, not the rim: compare content extents here.
+    const auto contentExtent = [](const QRect& outer) {
+        return snow_shot::presentation::pinnedContentRect(outer).size();
+    };
+    const QSize originalContent = contentExtent(original);
     for (int edge = 0; edge < 8; ++edge) {
         require(ScreenshotPinnedWindowTestAccess::beginControlled(window, cursor, edge),
                 "resize edge did not start");
         ScreenshotPinnedWindowTestAccess::updateControlled(window, cursor + deltas[edge]);
-        const QSize actual = window.currentNativeGeometry().size();
-        require(actual.width() > original.width() &&
+        const QSize actual = contentExtent(window.currentNativeGeometry());
+        require(actual.width() > originalContent.width() &&
                     std::abs(actual.width() - 2 * actual.height()) <= 1,
                 "all resize handles must preserve aspect ratio");
         ScreenshotPinnedWindowTestAccess::endControlled(window, true);
@@ -19446,9 +19453,10 @@ void pinnedControlledInteractionAndGestures() {
                 "crossing pin fixture could not begin");
         ScreenshotPinnedWindowTestAccess::updateControlled(window, cursor + displacement);
         const QRect crossed = window.currentNativeGeometry();
+        const QSize crossedContent = contentExtent(crossed);
         require((displacement.x() == 0 || crossed.x() < original.x()) &&
                     (displacement.y() == 0 || crossed.y() < original.y()) &&
-                    std::abs(crossed.width() - 2 * crossed.height()) <= 1,
+                    std::abs(crossedContent.width() - 2 * crossedContent.height()) <= 1,
                 "controlled pin resize must cross either or both axes proportionally");
         require(window.persistenceSnapshot().imageTransform.isIdentity() &&
                     ScreenshotPinnedWindowTestAccess::originalImage(window) == image,
