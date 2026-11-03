@@ -4259,8 +4259,15 @@ void pinnedWindowPoolReusesAndReplenishesPreparedShell() {
                     firstCompletionSucceeded = succeeded && !image.isNull();
                 }),
             "the first pooled pinned image could not be presented");
+    // `presentPinnedImage` takes the *content* rect in `nativeGeometry` and the
+    // window inflates it by `pinnedShadowMargin()` per side (#1778), so compare
+    // the placed content, not the shadow-inclusive native rect.
+    const QRect firstPlacedContent =
+        firstPrepared != nullptr
+            ? snow_shot::presentation::pinnedContentRect(firstPrepared->currentNativeGeometry())
+            : QRect();
     require(firstPrepared != nullptr && firstPrepared->isVisible() &&
-                firstPrepared->currentNativeGeometry() == firstGeometry &&
+                firstPlacedContent == firstGeometry &&
                 firstPrepared->persistenceSnapshot().clickThroughOpacityPercent == 50,
             "the first presentation should consume the prepared shell");
     waitForUi(100);
@@ -4302,8 +4309,12 @@ void pinnedWindowPoolReusesAndReplenishesPreparedShell() {
                                             }
                                         }),
             "the second pooled pinned image could not be presented");
+    const QRect secondPlacedContent =
+        secondPrepared != nullptr
+            ? snow_shot::presentation::pinnedContentRect(secondPrepared->currentNativeGeometry())
+            : QRect();
     require(secondPrepared != nullptr && secondPrepared->isVisible() &&
-                secondPrepared->currentNativeGeometry() == secondGeometry &&
+                secondPlacedContent == secondGeometry &&
                 secondPrepared->persistenceSnapshot().clickThroughOpacityPercent == 50,
             "the second presentation should consume the replenished shell");
     waitForUi(100);
