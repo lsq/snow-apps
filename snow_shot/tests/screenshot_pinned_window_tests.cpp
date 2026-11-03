@@ -4619,7 +4619,10 @@ void pinnedLargeImageRemainsOpenWhenEnteringDrawingMode(SnowCanvasRuntime&) {
     require(tableQrButton != nullptr, "large pinned table and QR trigger was not found");
     require(!tableQrButton->isEnabled(),
             "large pinned images should disable the table and QR trigger");
-    require(guardedWindow->currentNativeGeometry() == config.nativeGeometry,
+    // config.nativeGeometry is the content rectangle; the widget's own rectangle keeps the
+    // reserved shadow margin, so compare the quantity the config actually describes.
+    require(ScreenshotPinnedWindowTestAccess::contentGeometry(*guardedWindow) ==
+                config.nativeGeometry,
             "large pinned window geometry changed after entering drawing mode");
 
     guardedWindow->close();
@@ -25498,6 +25501,13 @@ int main(int argc, char* argv[]) {
             return 0;
         }
         if (app.arguments().contains(QStringLiteral("--original-image-preview-only"))) {
+            // The translation-mode overlay rasterises text: without a loaded family the offscreen
+            // platform's zero-metrics glyphs abort the whole process inside Qt's glyph cache.
+            const int previewFont = QFontDatabase::addApplicationFont(
+                QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
+            require(previewFont >= 0, "preview fixtures must load their bundled font");
+            QApplication::setFont(
+                QFont(QFontDatabase::applicationFontFamilies(previewFont).first(), 12));
             const double expectedDpr = qEnvironmentVariable("SNOW_PREVIEW_TEST_DPR").toDouble();
             if (expectedDpr > 0) {
                 require(QGuiApplication::primaryScreen() != nullptr &&
