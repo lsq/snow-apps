@@ -2906,8 +2906,15 @@ void pinnedTextWrapUsesVisibleClient() {
         require(bounds.has_value(), "a valid pinned viewport supplies text wrapping bounds");
         const qreal geometryScale =
             snow_shot::presentation::pinnedGeometryScale(canvas->devicePixelRatioF());
-        const QRectF client(QPointF(),
-                            QSizeF(window.currentNativeGeometry().size()) / geometryScale);
+        // The native geometry is the *outer* window. Configurable shadows made the
+        // window itself the shadow-bearing surface, so the visible client is that
+        // rect deflated by the shadow margin -- text must wrap inside the client,
+        // never over the rim, and the rim must not be mistaken for wrapping room.
+        const QRectF nativeClient(QPointF(),
+                                  QSizeF(window.currentNativeGeometry().size()) / geometryScale);
+        const qreal shadowInset = snow_shot::presentation::pinnedShadowMargin() / geometryScale;
+        const QRectF client =
+            nativeClient.adjusted(shadowInset, shadowInset, -shadowInset, -shadowInset);
         const QRectF viewBounds = canvas->canvasToViewTransform().mapRect(*bounds);
         const auto describeRect = [](const QRectF& rect) {
             return QStringLiteral("[%1,%2 %3x%4]")
@@ -2922,11 +2929,12 @@ void pinnedTextWrapUsesVisibleClient() {
                     qAbs(viewBounds.bottom() - client.bottom()) < 0.0001,
                 qPrintable(QStringLiteral("pinned text bounds match the exact client extent at "
                                           "the current DPR and zoom: view=%1 client=%2 "
-                                          "dpr=%3 geometryScale=%4 native=%5")
+                                          "dpr=%3 geometryScale=%4 native=%5 shadowInset=%6")
                                .arg(describeRect(viewBounds), describeRect(client))
                                .arg(canvas->devicePixelRatioF())
                                .arg(geometryScale)
-                               .arg(describeRect(window.currentNativeGeometry()))));
+                               .arg(describeRect(window.currentNativeGeometry()))
+                               .arg(shadowInset)));
         return *bounds;
     };
     const QRectF bounds = verifyClientBounds();
