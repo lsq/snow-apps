@@ -11962,6 +11962,10 @@ void pinnedAlwaysOnTopOffscreen() {
         Access::restoreOffscreen(restored, restoreConfig);
         restored.show();
         waitForUi(20);
+        // A pin builds its menu on the first context-menu request, so a restored
+        // window legitimately has none yet -- materialize it the same way the
+        // fresh fixture above does, then assert on the state it adopts.
+        materializePinnedMenuTree(restored);
         auto* restoredMenu = restored.findChild<adqt::widgets::AdContextMenu*>(
             QStringLiteral("screenshotPinnedContextMenu"));
         auto* restoredAction =
