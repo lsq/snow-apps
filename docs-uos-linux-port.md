@@ -7109,3 +7109,49 @@ Windows 分支，这正是"未被解析的代码面=盲区"的又一次实例。
 | --- | --- | --- |
 | `if(WIN32 OR APPLE)`（本机真实） | 成功 | 6 条（3 native + 3 settings） |
 | `if(FALSE)`（模拟 Linux） | **成功** | 3 条（只剩 settings） |
+
+#### 9.6.50 `QVariant::isNull()` 在 Qt5 与 Qt6 不是同一件事
+
+Qt5 里 `QVariant(QString()).isNull() == true`；Qt6 把 `isNull()` 收窄成"invalid 或空指针"。
+于是 `isValid() && !isNull()` 这种"有值"判据在 Qt6 上是恒等于 `isValid()` 的废话，在 Qt5 上却会
+**静默丢掉一个类型正确、内容为空的值**。
+
+本机 Qt 5.15.2 实测：
+
+```
+QVariant()          valid=0 null=1
+QVariant(QString()) valid=1 null=1   <- 分歧点
+QVariant("")        valid=1 null=0
+QVariant(" \t ")    valid=1 null=0
+```
+
+`AdSelect` 正好踩到：`normalizeSelectValue()` 的注释已经写明"null 与 empty 必须共享同一个键
+（QDataStream 区分二者）"，但函数开头那句 `if (!value.isValid() || value.isNull()) return {};`
+在 Qt5 上先把 null QString 拦掉了，后面那段 trim 折叠根本没机会执行。表现是
+`setCurrentValue(QString())` 变成"清空选择"，`adqt-select` 的
+`emptyStringValuesSelectTheirLabel` 第一个组合就红。
+
+修法：把"有值"收敛到一个 helper（`detail::hasSelectValue()` = `isValid()`），归一化、取键、
+`setCurrentValue`、`currentText`、列表行同步五处一起换。Qt6 行为不变。
+
+**门禁思路**：全仓搜 `isNull()` 搭配 `QVariant` 的地方，逐个人工判"这里想表达的是 invalid 还是
+null"。不能机械替换 —— `QPixmap::isNull()` / `QString::isNull()` 是另一回事。
+
+#### 9.6.51 Qt 光栅 clip 是"向外取整"，`toPoint()` 看不见它
+
+OCR 字形缓存那条守卫原本比较 `device.map(clip.topLeft()).toPoint()` 与缓存侧的同一表达式，
+想判断"取整后的 clip 是否相同"。但 Qt 建立光栅 clip 时对**左/上取 floor、右/下取 ceil**，
+而 `toPoint()` 是**四舍五入** —— 一个只在底边上差一行的 clip，四舍五入后完全一样。
+
+实测（dpr=2、canvas 变换 1.25）：
+
+```
+direct clip = 89,84 551x45
+cached clip = 89,84 551x46     <- 缓存多一整行
+```
+
+缓存把 clip 平移到整数像素后再取整，加法顺序变了就会跨过边界，于是缓存多画一整行选区高亮。
+改成比较 `mapRect(...).toAlignedRect()`；原来的角点比较保留，它还能覆盖亚像素那类情况。
+
+判定信号是测试侧的 `ink cached=40376 direct=39825 solid_violations=551`：差异像素全部落在
+"直绘是纯色"的位置 ⇒ 是画错位置，不是舍入误差。**只看差异像素数量会把它误判成容差问题。**
