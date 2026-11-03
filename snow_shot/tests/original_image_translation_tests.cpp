@@ -42,6 +42,7 @@
 #include <QApplication>
 #include <QContextMenuEvent>
 #include <QGraphicsItem>
+#include <QFontDatabase>
 #include <QGraphicsScene>
 #include <QGraphicsView>
 #include <QScreen>
@@ -77,6 +78,19 @@ void waitUntil(const std::function<bool()>& condition, const char* message) {
         QThread::msleep(1);
     }
     require(condition(), message);
+}
+
+// A closed top-level window is deleted through deleteLater(); processEvents() alone never
+// drains that queue, so waiting for one to disappear has to flush deferred deletes itself.
+template <typename T> void waitUntilDeleted(QPointer<T>& guard, const char* message) {
+    QElapsedTimer timer;
+    timer.start();
+    while (!guard.isNull() && timer.elapsed() < 5000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QThread::msleep(1);
+    }
+    require(guard.isNull(), message);
 }
 
 void configureTranslation(bool overlay = true, const QString& model = QStringLiteral("model-a")) {
@@ -1310,6 +1324,12 @@ void runOriginalImageTranslationTests() {
 
 #if defined(SNOW_SHOT_TEST_PINNED_TRANSLATION)
 void runPinnedOriginalImageTranslationTests() {
+    // The offscreen platform ships no font. Zero-metrics glyphs rasterised under the pin's
+    // rotation trip Qt's texture glyph cache assertion, which aborts the process outright.
+    const int bundledFont = QFontDatabase::addApplicationFont(
+        QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
+    require(bundledFont >= 0, "pinned translation fixtures must load their bundled font");
+    QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(bundledFont).first(), 12));
     configureTranslation();
     {
         const snow_shot::storage::ScreenshotTranslationSettings settings;
@@ -1394,7 +1414,7 @@ void runPinnedOriginalImageTranslationTests() {
             mergedConfig.persistedTranslationVisible = record.translationVisible;
             require(mergedServer.streams.size() == 1, "pinning must not retranslate merged text");
             window->close();
-            waitUntil([&]() { return guard.isNull(); }, "close merged translation pin");
+            waitUntilDeleted(guard, "close merged translation pin");
         }
     }
     configureTranslation();
@@ -1499,7 +1519,7 @@ void runPinnedOriginalImageTranslationTests() {
     waitUntil([&]() { return server.disconnected(0) && server.disconnected(1); },
               "finish pinned streams");
     pinned->close();
-    waitUntil([&]() { return guarded.isNull(); },
+    waitUntilDeleted(guarded,
               "closing the pin should release its translation owner");
     config.tableRecognition = nullptr;
     configureTranslation(false);
@@ -1604,7 +1624,7 @@ void runPinnedOriginalImageTranslationTests() {
         }
         require(server.streams.size() == 2, "restoration must not restart translation");
         restored->close();
-        waitUntil([&]() { return restoredGuard.isNull(); }, "close restored translation pin");
+        waitUntilDeleted(restoredGuard, "close restored translation pin");
     }
     for (const int invalidTranslation : {0, 1, 2}) {
         config.recognitionResults = partialResults;
@@ -1637,7 +1657,7 @@ void runPinnedOriginalImageTranslationTests() {
                 "missing or invalid translation must fall back to OCR and clear translation "
                 "visibility");
         fallback->close();
-        waitUntil([&]() { return fallbackGuard.isNull(); }, "close the translation fallback pin");
+        waitUntilDeleted(fallbackGuard, "close the translation fallback pin");
     }
 }
 #endif
