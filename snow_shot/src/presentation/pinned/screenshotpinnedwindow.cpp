@@ -8196,7 +8196,18 @@ void ScreenshotPinnedWindow::setClickThroughScreen(QScreen* screen) {
 }
 
 bool ScreenshotPinnedWindow::updateClickThroughExitButtonGeometry() {
-    if (m_clickThroughExitButton == nullptr || !isVisible()) {
+    // Not having a control yet is not a placement failure. Enabling click-through
+    // refreshes the layout before `ensureClickThroughExitButton()` creates the
+    // controls, and every caller treats `false` here as "the transition is
+    // impossible" and cancels the mode -- so reporting a failure for a control
+    // that simply does not exist yet cancelled click-through from inside its own
+    // enable sequence, leaving the window input-transparent with
+    // `m_clickThroughActive == false` (no click-through opacity, no recovery
+    // controls). Placement of an existing control is still validated below.
+    if (m_clickThroughExitButton == nullptr) {
+        return true;
+    }
+    if (!isVisible()) {
         return false;
     }
     const QRect pinnedGeometry = currentNativeGeometry();
