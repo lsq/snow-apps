@@ -7906,10 +7906,15 @@ void pinnedThumbnailTracksCurrentMousePosition() {
     auto* thumbnail = window.findChild<QAction*>(QStringLiteral("screenshotPinnedThumbnailAction"));
     require(thumbnail != nullptr, "thumbnail anchoring action missing");
     const auto requireAnchor = [](const QRect& before, const QRect& after, const QPoint& cursor) {
-        const QPointF fraction((cursor.x() - before.x()) / double(before.width()),
-                               (cursor.y() - before.y()) / double(before.height()));
-        const QPointF mapped(after.x() + fraction.x() * after.width(),
-                             after.y() + fraction.y() * after.height());
+        // Thumbnail mode scales the *content* around the cursor and re-inflates it
+        // by `pinnedShadowMargin()`, so the invariant lives on the content rects;
+        // mixing in the constant rim would shift the mapping by several pixels.
+        const QRect beforeContent = snow_shot::presentation::pinnedContentRect(before);
+        const QRect afterContent = snow_shot::presentation::pinnedContentRect(after);
+        const QPointF fraction((cursor.x() - beforeContent.x()) / double(beforeContent.width()),
+                               (cursor.y() - beforeContent.y()) / double(beforeContent.height()));
+        const QPointF mapped(afterContent.x() + fraction.x() * afterContent.width(),
+                             afterContent.y() + fraction.y() * afterContent.height());
         require((mapped - cursor).manhattanLength() <= 1.0,
                 "thumbnail transitions must preserve the current mouse anchor");
     };
