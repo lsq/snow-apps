@@ -7194,3 +7194,48 @@ encoding failure is reported
 反向验证：把 drag export 的格式还原成 300 个 `x`，该用例立刻回到 `wait` 超时（红）；
 换回注入根即绿。三组本地全绿：`snow-shot-pinned-drag-export-tests`、
 `snow-shot-pinned-shared-image-export-tests`、`snow-shot-pin-execution-autosave-tests`。
+
+#### 9.6.53 Qt5 `QImage` 从 const 数据构造后，元数据 setter 会 detach 并丢掉 cleanup
+
+`captureCollageImage()` 用只读包装（`QImage(const uchar*, ...)`，`ro_data=true`）把捕获的栅格
+和一块"预算预占"的生命周期绑起来：cleanup 回调负责释放 `CapturedImageLifetime`。
+Qt5 下 `setDotsPerMeterX` / `setColorSpace` / `setText` 任何一个元数据 setter 都会先 `detach()`
+——**深拷贝一份像素，新图不带那个 cleanup**，于是旧图析构时 cleanup 立刻跑掉，预占随之归零。
+现象是"刚返回就已经释放"：
+
+```
+CAPTURE RETURN internal=155232 public=155232
+BR2A reserved=0 key=365072220164     ← 返回后立刻归零
+```
+
+逐个 setter 加探针把界缩到 `setDotsPerMeterX`（`310464 → 155232`，正好一份像素）。
+改法：捕获的栅格本来就是唯一所有者，直接 `bits()`（可写包装）取像素，引用计数 1 时不会拷贝；
+改后 `BR2A reserved=155232`，预算断言通过。
+
+判据：断言"预占在返回之后仍然在账上"能抓出"返回即失效"；只断言"返回的图非空"完全抓不到。
+
+#### 9.6.54 离屏平台没有字体时，比较文字像素等于比较两张空白
+
+stitching 的文本用例在改完 `formattedDocument` 后比较拼接快照的像素，本机红：
+
+```
+STITCH PROBE beforeEqAfter=1 frozenStable=1 before=504x77 after=504x77
+stitching captures rendered text edits without retaining a mutable document
+```
+
+探针一条条证明"文档换了、分支对了、几何也对"，但就是**画不出像素**：
+
+```
+PVP PROBE doc=0x… len=19 text=[Current pinned text]
+PVP PROBE geom doc=336x51 itemPos=0,0 scale=1.5 mapped=(0,0,504,76.5) layerGeom=(0,0,504,77)
+PVP PROBE branch formatted=1 vp=504x77 differing=1     ← 只有探针自己点的那个红点
+```
+
+`-platform offscreen` 的 freetype 字体库没有字体目录（`QFontDatabase: Cannot find font directory
+C:/Qt/5.15.2/msvc2019_64/lib/fonts`），不显式装载字体时每个字形都是空白。同一文件里其它文本夹具
+都先 `addApplicationFont(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf")` 再
+`QApplication::setFont(...)`，只有这条忘了 ⇒ 编辑前后都是空白，`before != after` 永远不成立。
+补上后 `--stitching-snapshot-only` 与 `--multi-selection-only` 均 rc=0。
+
+判据：**凡是"改什么都相等"的断言，先确认被测对象可见**（字体、非空像素、非空集合），
+否则断言在测空气。"与中心像素不同的像素数"（`differing`）是最省事的可见性判据。

@@ -8378,7 +8378,6 @@ soname 不同。libde265/x265 早就是这个处境，所以这不是新问题�
 真要在"裸 UOS 20"上装 deb，出路是把 aom 也当私有库带进包（与 libjxl 同一套闭包机制）；
 CI 目前只验证 24.04，这条留到真机验证阶段一起定。</p>
 <hr>
-
 <h4>9.6.49 <code>#ifndef Q_OS_MACOS</code> 不是 <code>#ifdef Q_OS_WIN</code>（设置项版）</h4>
 <p>第二轮把 <code>settingscatalog.cpp</code> 里 4 个采集项的平台期望改成三分（macOS / Windows / 其他），
 但那只是<strong>让测试承认现状</strong>：Linux 上确实挂着这些项。现状本身是错的。</p>
@@ -8401,7 +8400,6 @@ X11/Wayland 管线上摆出了"抓屏 API：DXGI"，还给一个后端是 stub�
 把调用点单方面改回 <code>#ifndef Q_OS_MACOS</code>，定义仍在 Windows 分支里，项就重新出现在 Linux 上，
 而这正是最初那个 bug 的形状。反向验证：只把调用点改回去 → 门禁红（3 条），还原 → 绿。</p>
 <hr>
-
 <h4>9.6.50 <code>QVariant::isNull()</code> 在 Qt5 与 Qt6 不是同一件事</h4>
 <p>Qt5 里 <code>QVariant(QString()).isNull() == true</code>；Qt6 把 <code>isNull()</code> 收窄成"invalid 或空指针"。
 于是 <code>isValid() &amp;&amp; !isNull()</code> 这种"有值"判据在 Qt6 上是恒等于 <code>isValid()</code> 的废话，在 Qt5 上却会
@@ -8421,7 +8419,6 @@ QVariant(&quot; \t &quot;)    valid=1 null=0
 <code>setCurrentValue</code>、<code>currentText</code>、列表行同步五处一起换。Qt6 行为不变。</p>
 <p><strong>门禁思路</strong>：全仓搜 <code>isNull()</code> 搭配 <code>QVariant</code> 的地方，逐个人工判"这里想表达的是 invalid 还是
 null"。不能机械替换 —— <code>QPixmap::isNull()</code> / <code>QString::isNull()</code> 是另一回事。</p>
-
 <h4>9.6.51 Qt 光栅 clip 是"向外取整"，<code>toPoint()</code> 看不见它</h4>
 <p>OCR 字形缓存那条守卫原本比较 <code>device.map(clip.topLeft()).toPoint()</code> 与缓存侧的同一表达式，
 想判断"取整后的 clip 是否相同"。但 Qt 建立光栅 clip 时对<strong>左/上取 floor、右/下取 ceil</strong>，
@@ -8434,7 +8431,6 @@ cached clip = 89,84 551x46     &lt;- 缓存多一整行
 改成比较 <code>mapRect(...).toAlignedRect()</code>；原来的角点比较保留，它还能覆盖亚像素那类情况。</p>
 <p>判定信号是测试侧的 <code>ink cached=40376 direct=39825 solid_violations=551</code>：差异像素全部落在
 "直绘是纯色"的位置 ⇒ 是画错位置，不是舍入误差。<strong>只看差异像素数量会把它误判成容差问题。</strong></p>
-
 <h4>9.6.52 "超长文件名 = 保存失败"这条前提被上游 #2004 拆掉了</h4>
 <p><code>2fe8b10c</code>（#2004，导出路径支持时间变量）给<strong>每个路径组件</strong>加了截断
 （<code>composeExportFileName</code> 上限 248 UTF-8 字节，留 7 字节给 <code>QSaveFile</code> 的 <code>.XXXXXX</code>）。
@@ -8486,6 +8482,37 @@ encoding failure is reported
 <p>反向验证：把 drag export 的格式还原成 300 个 <code>x</code>，该用例立刻回到 <code>wait</code> 超时（红）；
 换回注入根即绿。三组本地全绿：<code>snow-shot-pinned-drag-export-tests</code>、
 <code>snow-shot-pinned-shared-image-export-tests</code>、<code>snow-shot-pin-execution-autosave-tests</code>。</p>
+<h4>9.6.53 Qt5 <code>QImage</code> 从 const 数据构造后，元数据 setter 会 detach 并丢掉 cleanup</h4>
+<p><code>captureCollageImage()</code> 用只读包装（<code>QImage(const uchar*, ...)</code>，<code>ro_data=true</code>）把捕获的栅格
+和一块"预算预占"的生命周期绑起来：cleanup 回调负责释放 <code>CapturedImageLifetime</code>。
+Qt5 下 <code>setDotsPerMeterX</code> / <code>setColorSpace</code> / <code>setText</code> 任何一个元数据 setter 都会先 <code>detach()</code>
+——<strong>深拷贝一份像素，新图不带那个 cleanup</strong>，于是旧图析构时 cleanup 立刻跑掉，预占随之归零。
+现象是"刚返回就已经释放"：</p>
+<pre><code>CAPTURE RETURN internal=155232 public=155232
+BR2A reserved=0 key=365072220164     ← 返回后立刻归零
+</code></pre>
+<p>逐个 setter 加探针把界缩到 <code>setDotsPerMeterX</code>（<code>310464 → 155232</code>，正好一份像素）。
+改法：捕获的栅格本来就是唯一所有者，直接 <code>bits()</code>（可写包装）取像素，引用计数 1 时不会拷贝；
+改后 <code>BR2A reserved=155232</code>，预算断言通过。</p>
+<p>判据：断言"预占在返回之后仍然在账上"能抓出"返回即失效"；只断言"返回的图非空"完全抓不到。</p>
+
+<h4>9.6.54 离屏平台没有字体时，比较文字像素等于比较两张空白</h4>
+<p>stitching 的文本用例在改完 <code>formattedDocument</code> 后比较拼接快照的像素，本机红：</p>
+<pre><code>STITCH PROBE beforeEqAfter=1 frozenStable=1 before=504x77 after=504x77
+stitching captures rendered text edits without retaining a mutable document
+</code></pre>
+<p>探针一条条证明"文档换了、分支对了、几何也对"，但就是<strong>画不出像素</strong>：</p>
+<pre><code>PVP PROBE doc=0x… len=19 text=[Current pinned text]
+PVP PROBE geom doc=336x51 itemPos=0,0 scale=1.5 mapped=(0,0,504,76.5) layerGeom=(0,0,504,77)
+PVP PROBE branch formatted=1 vp=504x77 differing=1     ← 只有探针自己点的那个红点
+</code></pre>
+<p><code>-platform offscreen</code> 的 freetype 字体库没有字体目录（<code>QFontDatabase: Cannot find font directory
+C:/Qt/5.15.2/msvc2019_64/lib/fonts</code>），不显式装载字体时每个字形都是空白。同一文件里其它文本夹具
+都先 <code>addApplicationFont(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf")</code> 再
+<code>QApplication::setFont(...)</code>，只有这条忘了 ⇒ 编辑前后都是空白，<code>before != after</code> 永远不成立。
+补上后 <code>--stitching-snapshot-only</code> 与 <code>--multi-selection-only</code> 均 rc=0。</p>
+<p>判据：<strong>凡是"改什么都相等"的断言，先确认被测对象可见</strong>（字体、非空像素、非空集合），
+否则断言在测空气。"与中心像素不同的像素数"（<code>differing</code>）是最省事的可见性判据。</p>
 
 <h2 id="10-工作量-优先级矩阵">10. 工作量 / 优先级矩阵</h2>
 <table>
