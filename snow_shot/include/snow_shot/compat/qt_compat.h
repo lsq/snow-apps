@@ -2353,12 +2353,12 @@ using SnowEnterEventInstance = QEvent;
 //     Qt 6.8 added the third argument (Qt::ImageConversionFlags); the two-
 //     argument form above is unchanged.
 //
-//     LOSSY on Qt 5: both the format and the flags are dropped, and Qt 5
-//     converts into the source format. Every test that passes a format does so
-//     to assert the *pixels* came back in that layout, and it re-checks the
-//     format with QCOMPARE -- which is the assertion that can fail, not this
-//     call. The flags argument only ever carries dithering requests, which Qt 5
-//     applies unconditionally on this path.
+//     Qt 5 has only the single-argument form: the space is converted in place and
+//     the format afterwards, which costs one extra temporary but produces the same
+//     pixels. Dropping the format instead would hand callers an image in the
+//     source layout -- the pinned colour-space fixtures compare rendered pixels
+//     against this result, so a semi-transparent pixel read back un-premultiplied
+//     from RGBA8888 never matched the premultiplied value the renderer stored.
 [[nodiscard]] inline QImage snowImageConvertedToColorSpace(const QImage& image,
                                                           const QColorSpace& space,
                                                           QImage::Format format =
@@ -2377,9 +2377,8 @@ using SnowEnterEventInstance = QEvent;
     return image.convertedToColorSpace(space, format);
 #  endif
 #else
-    Q_UNUSED(format)
-    Q_UNUSED(flags)
-    return image.convertedToColorSpace(space);
+    const QImage converted = image.convertedToColorSpace(space);
+    return format == QImage::Format_Invalid ? converted : converted.convertToFormat(format, flags);
 #endif
 }
 
