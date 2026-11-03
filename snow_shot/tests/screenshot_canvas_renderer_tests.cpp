@@ -7252,12 +7252,36 @@ void horizontalScrollingThumbnailUsesColumnTilesAndHorizontalInteraction() {
     parent.show();
     thumbnail.show();
     QApplication::processEvents();
-    require(thumbnail.size() == QSize(220, 128),
-            "horizontal preview should be wide with a fixed 128-pixel height");
+    // The preview is scaled to fit a 220x128 box: `imageScale()` takes the smaller of the
+    // cross fit (128/128) and the extent fit (220/300), and `imageTargetRect()` draws the
+    // source at that one scale, so the widget and the pixels inside it can never disagree.
+    // The 300x128 source therefore lands at 220x94 -- an older expectation of a fixed
+    // 128-pixel cross predates the fit-to-box formula and described a letterbox strip that
+    // neither the paint path nor the scrollbar maths assume.
+    const qreal fitScale = 220.0 / 300.0;
+    const QSize fittedExtent(220, qCeil(128 * fitScale));
+    require(thumbnail.size() == fittedExtent,
+            qPrintable(QStringLiteral("horizontal preview should fit the 220x128 preview box "
+                                      "while keeping the source aspect: actual=%1x%2 "
+                                      "expected=%3x%4 hint=%5x%6")
+                           .arg(thumbnail.width())
+                           .arg(thumbnail.height())
+                           .arg(fittedExtent.width())
+                           .arg(fittedExtent.height())
+                           .arg(thumbnail.sizeHint().width())
+                           .arg(thumbnail.sizeHint().height())));
     auto* scrollBar = thumbnail.findChild<QScrollBar*>();
-    require(scrollBar != nullptr && scrollBar->orientation() == Qt::Horizontal &&
-                !scrollBar->isHidden(),
-            "horizontal preview should expose a horizontal scrollbar when clipped");
+    require(scrollBar != nullptr && scrollBar->orientation() == Qt::Horizontal,
+            "horizontal preview should own a horizontal scrollbar");
+    // The capture viewport is the whole 300-pixel source, and the preview fits it exactly, so
+    // there is nothing to scroll yet. The bar has to appear once the stitched image grows,
+    // which the appended and prepended columns below do.
+    require(scrollBar->isHidden(),
+            qPrintable(QStringLiteral("a preview that fits the whole capture viewport must not "
+                                      "show a scrollbar: visible=%1 range=%2..%3")
+                           .arg(!scrollBar->isHidden())
+                           .arg(scrollBar->minimum())
+                           .arg(scrollBar->maximum())));
 
     QImage appended(180, 128, QImage::Format_RGBA8888);
     appended.fill(QColor(80, 100, 120));
@@ -7276,6 +7300,14 @@ void horizontalScrollingThumbnailUsesColumnTilesAndHorizontalInteraction() {
     painter.end();
     require(thumbnail.previewImageForTesting() == expected,
             "horizontal preview tiles should preserve prepended and appended column order");
+    // 570 source pixels at the 0.733 fit scale occupy 418 preview pixels inside a 220-pixel
+    // widget, so now there is something to scroll.
+    require(!scrollBar->isHidden() && scrollBar->maximum() > 0,
+            qPrintable(QStringLiteral("a preview wider than its extent must offer horizontal "
+                                      "scrolling: hidden=%1 range=%2..%3")
+                           .arg(scrollBar->isHidden())
+                           .arg(scrollBar->minimum())
+                           .arg(scrollBar->maximum())));
     constexpr qsizetype tileBytes = 128 * 256 * 4;
     require(thumbnail.previewAllocatedBytesForTesting() <=
                 thumbnail.previewLogicalBytesForTesting() + tileBytes,
@@ -9856,6 +9888,10 @@ int main(int argc, char** argv) {
         selectionBackgroundPreviewMatchesComposition();
         hoveredSelectionToolbarInvalidatesOnlyPreviewRing();
         hoveredCompoundSelectionShowsCheckerboardInTransparentGaps();
+        return 0;
+    }
+    if (application.arguments().contains(QStringLiteral("--horizontal-thumbnail-only"))) {
+        horizontalScrollingThumbnailUsesColumnTilesAndHorizontalInteraction();
         return 0;
     }
     if (application.arguments().contains(QStringLiteral("--ocr-glyph-margins-only"))) {
