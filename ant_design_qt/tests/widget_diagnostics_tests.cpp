@@ -22,6 +22,7 @@ using namespace adqt::widgets;
 
 namespace {
 QHash<QObject*, int> publishedRows;
+int accessibilityUpdates = 0;
 
 void require(bool condition, const char* message) {
   if (!condition) {
@@ -31,6 +32,9 @@ void require(bool condition, const char* message) {
 }
 
 void recordAccessibilityUpdate(QAccessibleEvent* event) {
+  // Every update counts, not just table changes: "no events at all" and "events
+  // arrive but never a table change" point at different failures.
+  ++accessibilityUpdates;
   if (event->type() != QAccessible::TableModelChanged) {
     return;
   }
@@ -108,6 +112,18 @@ void menuPublishesRowsBeforeSelection() {
   const bool wasActive = QAccessible::isActive();
   QAccessible::setActive(true);
   const auto previousHandler = QAccessible::installUpdateHandler(recordAccessibilityUpdate);
+  // Reported only when a publication requirement fails, so the next log says
+  // whether this platform posts nothing at all or posts something else entirely,
+  // and whether the view even has the rows. It does not touch the verdict.
+  const auto reportPublication = [](const char* stage, AdNavigationMenu::Mode mode,
+                                    const QTreeView* tree, int expected, int modelRows) {
+    std::fprintf(stderr,
+                 "menu publication diagnostic: stage=%s mode=%d tree=%p updates=%d "
+                 "expectedRows=%d publishedRows=%d modelRows=%d\n",
+                 stage, static_cast<int>(mode), static_cast<const void*>(tree),
+                 accessibilityUpdates, expected, publishedRows.value(const_cast<QTreeView*>(tree), -1),
+                 modelRows);
+  };
   for (auto mode : {AdNavigationMenu::Mode::Inline, AdNavigationMenu::Mode::Vertical,
                     AdNavigationMenu::Mode::Horizontal}) {
     QStandardItemModel model;
@@ -120,6 +136,9 @@ void menuPublishesRowsBeforeSelection() {
     const auto trees = menu.findChildren<QTreeView*>();
     require(trees.size() == 2, "Menu must have inline and vertical tree views");
     for (auto* tree : trees) {
+      if (publishedRows.value(tree, -1) != 2) {
+        reportPublication("setModel", mode, tree, 2, tree->model() ? tree->model()->rowCount() : -1);
+      }
       require(publishedRows.value(tree, -1) == 2,
               "Menu must publish populated rows before returning from setModel");
     }
@@ -127,11 +146,17 @@ void menuPublishesRowsBeforeSelection() {
     menu.setCurrentIndex(model.index(0, 0));
     model.appendRow(new QStandardItem(QStringLiteral("Third")));
     for (auto* tree : trees) {
+      if (publishedRows.value(tree, -1) != 3) {
+        reportPublication("insert", mode, tree, 3, tree->model() ? tree->model()->rowCount() : -1);
+      }
       require(publishedRows.value(tree, -1) == 3,
               "Inserted rows must reach accessibility before the next selection");
     }
     model.clear();
     for (auto* tree : trees) {
+      if (publishedRows.value(tree, -1) != 0) {
+        reportPublication("clear", mode, tree, 0, tree->model() ? tree->model()->rowCount() : -1);
+      }
       require(publishedRows.value(tree, -1) == 0, "Cleared menus must publish zero rows");
     }
   }
