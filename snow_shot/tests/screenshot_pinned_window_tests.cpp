@@ -21899,6 +21899,13 @@ void pinnedImageSplittingSnapshots() {
 
 void pinnedImageStitchingSnapshots() {
     using Access = ScreenshotPinnedWindowTestAccess;
+    // The formatted source below is compared by pixels, and the offscreen platform ships no
+    // fonts of its own: without a loaded family every glyph renders blank and an edit to the
+    // document would compare equal to leaving it untouched.
+    const int font = QFontDatabase::addApplicationFont(
+        QStringLiteral(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf"));
+    require(font >= 0, "stitching text fixtures must load their bundled font");
+    QApplication::setFont(QFont(QFontDatabase::applicationFontFamilies(font).first(), 12));
     PinnedSelectionFixture fixture;
     auto& first = fixture.add({40, 60});
     auto& second = fixture.add({230, 160});
