@@ -4501,6 +4501,42 @@ qsizetype differingPixelCount(const QImage& left, const QImage& right) {
     return differing;
 }
 
+// Where two renders disagree says more than how many pixels do. A phase that was not
+// rebuilt leaves the reference's ink untouched across the whole item; a re-rasterised
+// glyph keeps its ink but moves the outline by a pixel; a lost background leaves a
+// filled band where the reference has canvas. The counts below split by direction
+// against the canvas colour so the shape survives a log line.
+struct PixelDelta {
+    QRect bounds;
+    qsizetype referenceOnly = 0;
+    qsizetype candidateOnly = 0;
+    qsizetype other = 0;
+};
+
+PixelDelta describePixelDelta(const QImage& candidate, const QImage& reference) {
+    PixelDelta delta;
+    if (candidate.size() != reference.size() || candidate.format() != reference.format())
+        return delta;
+    const QRgb canvas = reference.pixel(0, 0);
+    for (int y = 0; y < reference.height(); ++y) {
+        for (int x = 0; x < reference.width(); ++x) {
+            const QRgb want = reference.pixel(x, y);
+            const QRgb got = candidate.pixel(x, y);
+            if (want == got)
+                continue;
+            const QRect pixel(x, y, 1, 1);
+            delta.bounds = delta.bounds.isNull() ? pixel : delta.bounds.united(pixel);
+            if (got == canvas)
+                ++delta.referenceOnly;
+            else if (want == canvas)
+                ++delta.candidateOnly;
+            else
+                ++delta.other;
+        }
+    }
+    return delta;
+}
+
 QImage renderTextCacheSample(const SnowSceneDisplayItem& item, const QFont& font, double zoom,
                              bool cached, bool strips, qreal dpr = 1.0,
                              const QPointF& position = QPointF(350.0, 220.0),
@@ -4779,6 +4815,7 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
         bool rebuiltMatches = false;
         qsizetype coldPixelsDiffering = 0;
         qsizetype rebuildPixelsDiffering = 0;
+        PixelDelta rebuildDelta;
         RenderCacheDiagnostics cold;
         RenderCacheDiagnostics after;
     } observed;
@@ -4794,8 +4831,10 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
         const auto rebuilt = renderTextCacheSample(item, font, 1.0, true, false);
         observed.after = renderCacheDiagnosticsForCurrentThread();
         observed.rebuiltMatches = rebuilt == expected;
-        if (!observed.rebuiltMatches)
+        if (!observed.rebuiltMatches) {
             observed.rebuildPixelsDiffering = differingPixelCount(rebuilt, expected);
+            observed.rebuildDelta = describePixelDelta(rebuilt, expected);
+        }
         clearRenderCacheForCurrentThread();
     });
     ready.wait();
@@ -4807,13 +4846,27 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
             "font database changes must invalidate GUI layouts");
     fontsChanged.set_value();
     worker.join();
-    require(observed.rebuiltMatches && observed.coldMatches,
-            qPrintable(QStringLiteral("worker layouts must match the GUI thread: cold=%1 "
-                                      "(%2 px) rebuilt=%3 (%4 px)")
+    require(observed.coldMatches,
+            qPrintable(QStringLiteral("a worker's first layout must match the GUI thread: %1 px "
+                                      "differ")
+                           .arg(observed.coldPixelsDiffering)));
+    require(observed.rebuiltMatches,
+            qPrintable(QStringLiteral("a worker rebuild after a font database change must match "
+                                      "the GUI thread: %1 px differ in %2,%3 %4x%5 "
+                                      "(reference-only=%6 candidate-only=%7 both-inked=%8) "
+                                      "cold=%9 builds=%10 hits=%11 entries=%12")
+                           .arg(observed.rebuildPixelsDiffering)
+                           .arg(observed.rebuildDelta.bounds.x())
+                           .arg(observed.rebuildDelta.bounds.y())
+                           .arg(observed.rebuildDelta.bounds.width())
+                           .arg(observed.rebuildDelta.bounds.height())
+                           .arg(observed.rebuildDelta.referenceOnly)
+                           .arg(observed.rebuildDelta.candidateOnly)
+                           .arg(observed.rebuildDelta.other)
                            .arg(observed.coldMatches ? 1 : 0)
-                           .arg(observed.coldPixelsDiffering)
-                           .arg(observed.rebuiltMatches ? 1 : 0)
-                           .arg(observed.rebuildPixelsDiffering)));
+                           .arg(observed.after.builds)
+                           .arg(observed.after.hits)
+                           .arg(observed.after.entries)));
     require(observed.cold.builds == 3 && observed.cold.hits == 0,
             qPrintable(QStringLiteral("the worker's first render must build all three phases: "
                                       "builds=%1 hits=%2 entries=%3")
@@ -5578,6 +5631,10 @@ int main(int argc, char** argv) {
         serialNumberTypesRenderExpectedSilhouettesAndSolidSemantics();
         solidSerialNumberChoosesFixedContrastLabelColors();
         textEditorConnectorBuildsSerialBoundConnector();
+        return 0;
+    }
+    if (app.arguments().contains(QStringLiteral("--font-database-only"))) {
+        preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges();
         return 0;
     }
     if (app.arguments().contains(QStringLiteral("--text-render-cache-only"))) {
