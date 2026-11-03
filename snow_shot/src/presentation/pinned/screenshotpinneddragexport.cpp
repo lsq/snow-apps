@@ -145,6 +145,9 @@ bool ScreenshotPinnedDragExport::dragging() const {
 void ScreenshotPinnedDragExport::setExecutor(Executor executor) {
     m_executor = std::move(executor);
 }
+void ScreenshotPinnedDragExport::setStagingRoot(QString root) {
+    m_stagingRoot = std::move(root);
+}
 
 void ScreenshotPinnedDragExport::cancel() {
     auto request = std::exchange(m_request, {});
@@ -170,9 +173,10 @@ void ScreenshotPinnedDragExport::start(std::shared_ptr<ScreenshotExportArtifact>
     const ScreenshotPdfOptions pdf{screenshot_pdf::pageSizeForKey(settings.pdfPageSize())};
     const QString filenameFormat = settings.autoSaveFilenameFormat();
     const QDateTime requestedAt = QDateTime::currentDateTime();
-    const bool accepted =
-        request->artifact->requestImage(this, [this, request, format, encoding, pdf, filenameFormat,
-                                               requestedAt](ScreenshotExportImageResult result) {
+    const QDir stagingRoot = m_stagingRoot.isEmpty() ? QDir::temp() : QDir(m_stagingRoot);
+    const bool accepted = request->artifact->requestImage(
+        this, [this, request, format, encoding, pdf, filenameFormat, requestedAt,
+               stagingRoot](ScreenshotExportImageResult result) {
             if (m_request != request)
                 return;
             if (!result.succeeded()) {
@@ -182,7 +186,7 @@ void ScreenshotPinnedDragExport::start(std::shared_ptr<ScreenshotExportArtifact>
             }
             request->image = std::move(result.image);
             request->directory = std::make_shared<QTemporaryDir>(
-                QDir::temp().filePath(QStringLiteral("snow-shot-drag-XXXXXX")));
+                stagingRoot.filePath(QStringLiteral("snow-shot-drag-XXXXXX")));
             request->job = ScreenshotExportCoordinator::shared().submit(
                 this, ScreenshotExportCoordinator::Priority::Foreground,
                 [directory = request->directory, image = request->image, format, encoding, pdf,

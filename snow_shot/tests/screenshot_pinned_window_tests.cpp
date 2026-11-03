@@ -80,6 +80,7 @@
 #include "snow_shot/presentation/components/icons/snowshoticons.h"
 #include "snow_shot/storage/applicationstorage.h"
 #include "snow_shot/storage/configurationstore.h"
+#include "snow_shot/storage/exportfilename.h"
 #include "snow_shot/storage/pinnedwindowrepository.h"
 #include "snow_shot/storage/pinnedwindowtypes.h"
 #include "snow_shot/storage/settingsadapters.h"
@@ -16147,20 +16148,38 @@ void pinnedDragExportOffscreen() {
         return QDir(QDir::tempPath()).entryList({QStringLiteral("snow-shot-drag-*")}, QDir::Dirs);
     };
     const auto retainedDirectories = stagedDirectories();
+    // Export names are bounded to the filesystem component limit, so no filename format can
+    // fail any more. Stage the payload under a regular file instead: creating the temporary
+    // directory fails on every platform, which is the file error this case has to survive.
+    const QString blockedRoot = QDir(QDir::temp())
+                                    .filePath(QStringLiteral("snow-shot-drag-blocked-%1")
+                                                  .arg(QCoreApplication::applicationPid()));
+    QFile::remove(blockedRoot);
+    QFile blocker(blockedRoot);
+    require(blocker.open(QIODevice::WriteOnly) && blocker.write("not a directory") > 0,
+            "create blocked staging root");
+    blocker.close();
+    const auto removeBlocker = qScopeGuard([&] { QFile::remove(blockedRoot); });
     require(settings.setImageFormat(QStringLiteral("png")) &&
-                settings.setAutoSaveFilenameFormat(QString(300, QLatin1Char('x'))),
+                settings.setAutoSaveFilenameFormat(QStringLiteral("drag-result")),
             "configure deterministic file error");
     ScreenshotPinnedDragExport failing;
+    failing.setStagingRoot(blockedRoot);
     bool failed = false;
-    failing.setExecutor([](QDrag&) -> Qt::DropAction {
-        throw std::runtime_error("failed export must not start native drag");
+    bool startedNativeDrag = false;
+    failing.setExecutor([&](QDrag&) -> Qt::DropAction {
+        startedNativeDrag = true;
+        return Qt::CopyAction;
     });
     failing.start(
         std::make_shared<ScreenshotExportArtifact>(ScreenshotExportSource::fromImage(image)),
         [&](QString error) { failed = !error.isEmpty(); });
     wait([&] { return failed; }, "encoding failure is reported");
+    require(!startedNativeDrag && !failing.busy(), "failed export must not start native drag");
     wait([&] { return stagedDirectories() == retainedDirectories; },
          "failed unpublished files are removed");
+    require(QFileInfo(blockedRoot).isFile() && QFileInfo(blockedRoot).size() > 0,
+            "a failed export must not touch the blocked staging root");
 }
 
 #ifdef Q_OS_WIN
@@ -16759,9 +16778,12 @@ void pinnedExecutionAutomaticSaveOffscreen() {
             automatic.receiver = &receiver;
             automatic.configuredSaveDirectory = directory.path();
             automatic.format = ScreenshotImageFileFormat::Bmp;
+            // Export names are bounded to the filesystem limit now, so no component length can
+            // fail any more. A format that still carries a separator is what the save layer
+            // rejects: that is the file error this scenario has to report.
             automatic.filenameFormat =
                 scenario == Scenario::SaveFailure
-                    ? QString(300, QLatin1Char('x'))
+                    ? QStringLiteral("blocked/name")
                     : QStringLiteral("pin-%1-%2").arg(scrolling).arg(static_cast<int>(scenario));
             automatic.encoding = {42, ScreenshotCompressionLevel::High};
             automatic.requestedAt = QDateTime(QDate(2026, 1, 2), QTime(3, 4, 5));
@@ -17149,22 +17171,38 @@ void pinnedSharedImageExportOffscreen() {
         }
     }
 
-    // A component longer than the filesystem limit fails in every fallback directory.
+    // A component longer than the filesystem limit is shortened instead of failing, so the copy
+    // still publishes the saved file under a name that fits every platform.
     require(settings.setAutoSaveFilenameFormat(QString(300, QLatin1Char('x'))) &&
                 settings.setAutoSaveAfterExecutionActions({QStringLiteral("copy_pinned_image")}),
-            "configure deterministic save failure");
+            "configure an over-long filename component");
     for (bool copyFile : {false, true}) {
-        require(settings.setCopyImageFileToClipboard(copyFile), "configure failing copy mode");
+        require(settings.setCopyImageFileToClipboard(copyFile), "configure bounded copy mode");
         seedClipboard();
         Access::copyCurrentViewport(window);
-        wait([&] { return !Access::exportArtifact(window); }, "failed save settles export");
+        wait([&] { return !Access::exportArtifact(window); }, "bounded save settles export");
         if (copyFile) {
-            require(QApplication::clipboard()->text() == QStringLiteral("unchanged"),
-                    "failed file copy leaves clipboard untouched");
+            const auto urls = QApplication::clipboard()->mimeData()->urls();
+            const QString published = urls.size() == 1 ? urls.front().toLocalFile() : QString();
+            const QString publishedName = QFileInfo(published).fileName();
+            const QString publishedBase = QFileInfo(published).completeBaseName();
+            // A collision suffix ("_1") may be appended, so accept the bounded stem plus digits.
+            const auto boundedStem =
+                std::all_of(publishedBase.cbegin(), publishedBase.cend(), [](QChar character) {
+                    return character == QLatin1Char('x') || character == QLatin1Char('_') ||
+                           character.isDigit();
+                });
+            require(
+                QFileInfo(published).isAbsolute() &&
+                    publishedName.endsWith(QStringLiteral(".png")) &&
+                    publishedName.toUtf8().size() <=
+                        snow_shot::storage::maximumExportPathComponentUtf8Bytes &&
+                    !publishedBase.isEmpty() && boundedStem && QFileInfo::exists(published),
+                "an over-long component is bounded to the filesystem limit instead of rejected");
         } else {
             require(!exportedClipboardImage().isNull() &&
                         exportedClipboardImage().size() != sentinel.size(),
-                    "automatic save failure still publishes image");
+                    "a bounded save still publishes the image");
         }
     }
 

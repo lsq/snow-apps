@@ -5,6 +5,7 @@
 #include <QDrag>
 #include <QList>
 #include <QPointer>
+#include <QString>
 #include <QTimer>
 
 class QTemporaryDir;
@@ -54,11 +55,16 @@ class ScreenshotPinnedDragExport final : public QObject {
     bool busy() const;
     bool dragging() const;
     void setExecutor(Executor executor);
+    // Redirects where drag payloads are staged. Callers only need this to reproduce a file
+    // error deterministically: the filename format itself can no longer fail, because export
+    // names are bounded to the filesystem component limit instead of being rejected.
+    void setStagingRoot(QString root);
 
   private:
     struct Request;
     std::shared_ptr<Request> m_request;
     Executor m_executor;
+    QString m_stagingRoot;
     bool m_dragging = false;
     void finish(const std::shared_ptr<Request>& request, const ScreenshotExportTaskResult& result);
 };
