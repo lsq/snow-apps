@@ -4491,9 +4491,13 @@ void ScreenshotPinnedWindow::setControlsPointerInside(bool inside) {
 void ScreenshotPinnedWindow::updateControlsVisibility() {
     if (m_closing)
         return;
+    // The presence policy compares against the window's native rect ("at least
+    // 383 px"), which has been content plus `pinnedShadowMargin()` since #1778.
+    // Feeding it the content size effectively raised the threshold by the rim and
+    // suppressed the panel on windows the policy considers large enough.
     m_pointerPresence->setPresentation(
         {isVisible(), m_thumbnailMode, m_editController != nullptr && m_editController->editMode(),
-         m_clickThroughActive, currentContentNativeGeometry().size(),
+         m_clickThroughActive, currentNativeGeometry().size(),
          snow_shot::storage::PinToScreenSettings().showWindowButtons()});
 }
 

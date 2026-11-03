@@ -8440,8 +8440,8 @@ void pinnedWindowButtonsFollowSettings() {
     QCoreApplication::sendEvent(&window, &enter);
     require(!panel->isVisible() && !edit->isVisible() && !close->isVisible(),
             "new pinned windows must honor disabled window buttons even on hover");
-    require(settings.setShowWindowButtons(true) && panel->isVisible() && edit->isVisible() &&
-                close->isVisible(),
+    const bool buttonsEnabled = settings.setShowWindowButtons(true);
+    require(buttonsEnabled && panel->isVisible() && edit->isVisible() && close->isVisible(),
             "enabling window buttons must immediately reveal both on a hovered pin");
     require(settings.setShowWindowButtons(false) && !panel->isVisible() && !edit->isVisible() &&
                 !close->isVisible(),
