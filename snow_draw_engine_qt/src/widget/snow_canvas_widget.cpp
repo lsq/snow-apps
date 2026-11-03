@@ -3827,9 +3827,16 @@ bool SnowCanvasWidget::Impl::handleWheel(QWheelEvent* event) {
         if (!plan.shouldStepFontSize) {
             return false;
         }
-        return fontWheelTarget() == FontWheelTarget::SerialNumber
-                   ? stepSerialNumberFontSize(plan.increase)
-                   : stepTextFontSize(plan.increase);
+        // The tool owns the wheel: accept it, or the step is applied and the event
+        // still bubbles to the host, which then also scales the pin (or changes its
+        // opacity) for the same gesture.
+        const bool stepped = fontWheelTarget() == FontWheelTarget::SerialNumber
+                                 ? stepSerialNumberFontSize(plan.increase)
+                                 : stepTextFontSize(plan.increase);
+        if (stepped) {
+            event->accept();
+        }
+        return stepped;
     }
 
     if (!wheelZoomEnabled()) {
