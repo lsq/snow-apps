@@ -24052,8 +24052,19 @@ void pinnedShadowStateAndMarginsOffscreen() {
     const auto sample = [&] { return renderWholeWidget(window).pixelColor(marginSample); };
     const auto requireShadowRgb = [](const QColor& actual, QColor expected, int tolerance,
                                      const char* message) {
-        expected.setAlpha(actual.alpha());
-        requireColorNear(actual, expected, tolerance, message);
+        // The shadow paints a gradient, so the sampled alpha is usually far below the
+        // configured one. Qt stores it premultiplied and `pixelColor()` unpremultiplies,
+        // which alone can shift a channel by 255/alpha (alpha 29 turns 40,60,220 into
+        // 44,62,220). Compare premultiplied channels so the tolerance measures the paint
+        // and not the round trip.
+        const double alpha = actual.alpha() / 255.0;
+        const auto premultiplied = [alpha](int channel) { return qRound(channel * alpha); };
+        require(qAbs(premultiplied(actual.red()) - premultiplied(expected.red())) <= tolerance &&
+                    qAbs(premultiplied(actual.green()) - premultiplied(expected.green())) <=
+                        tolerance &&
+                    qAbs(premultiplied(actual.blue()) - premultiplied(expected.blue())) <=
+                        tolerance,
+                message);
     };
     ScreenshotPinnedWindow::setRuntimeShadowColor(QColor());
     Access::shadowState(window, false, true);
@@ -24085,9 +24096,25 @@ void pinnedShadowStateAndMarginsOffscreen() {
                 const auto& raster = *static_cast<const QImage*>(store->paintDevice());
                 const QPoint physicalSample =
                     QPointF(marginSample * window.devicePixelRatioF()).toPoint();
-                require(shadow ? raster.pixelColor(physicalSample).alpha() > 0
-                               : raster.pixelColor(physicalSample).alpha() == 0,
-                        "published backing store clears stale shadow pixels on every toggle");
+                const QColor publishedColor = raster.pixelColor(physicalSample);
+                // A raster backing store does not always carry an alpha channel: Qt 5's
+                // offscreen/xcb surface is plain RGB32, which keeps the *premultiplied*
+                // residue of the last paint and reports alpha 255 for every pixel. Compare
+                // the premultiplied projection there, and the straight colour when the
+                // surface does have alpha.
+                if (raster.hasAlphaChannel()) {
+                    requireColorNear(publishedColor, pixel, 3,
+                                     "published backing store clears stale shadow pixels on "
+                                     "every toggle");
+                } else {
+                    const QColor premultiplied(
+                        qRound(pixel.red() * pixel.alphaF()),
+                        qRound(pixel.green() * pixel.alphaF()),
+                        qRound(pixel.blue() * pixel.alphaF()));
+                    requireColorNear(publishedColor, premultiplied, 3,
+                                     "published backing store clears stale shadow pixels on "
+                                     "every toggle");
+                }
             }
             requireColorNear(renderWidget(window).pixelColor(40, 40), source.pixelColor(40, 40), 0,
                              "decoration never changes interior image pixels");
