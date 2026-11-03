@@ -1597,7 +1597,7 @@ QVariantList AdSelect::selectedModelValues() const {
     }
     const QVariant value = detail::materializeSelectOption(index, roles).value;
     const QString key = detail::selectValueKey(value);
-    if (!value.isValid() || value.isNull() || key.isEmpty() || seen.contains(key)) {
+    if (!detail::hasSelectValue(value) || key.isEmpty() || seen.contains(key)) {
       continue;
     }
     seen.append(key);
@@ -1614,7 +1614,7 @@ QVariantList AdSelect::normalizedCustomTagValues(const QVariantList& values) con
   for (const QVariant& value : values) {
     const QVariant normalized = detail::normalizeSelectValue(value);
     const QString key = detail::selectValueKey(normalized);
-    if (!normalized.isValid() || normalized.isNull() || key.isEmpty() || seen.contains(key)) {
+    if (!detail::hasSelectValue(normalized) || key.isEmpty() || seen.contains(key)) {
       continue;
     }
     if (sourceIndexForValue(normalized).isValid()) {
@@ -2275,7 +2275,7 @@ void AdSelect::setFeedbackIconRef(const adqt::icons::IconRef& token) {
 QVariant AdSelect::currentValue() const { return currentValueCache_; }
 
 void AdSelect::setCurrentValue(const QVariant& value) {
-  setCurrentValues(value.isValid() && !value.isNull() ? QVariantList{value} : QVariantList{});
+  setCurrentValues(detail::hasSelectValue(value) ? QVariantList{value} : QVariantList{});
 }
 
 QVariantList AdSelect::currentValues() const { return currentValuesCache_; }
@@ -2407,7 +2407,7 @@ QString AdSelect::currentText() const {
     return index.data(Qt::DisplayRole).toString().trimmed();
   }
 
-  if (!currentValue().isValid() || currentValue().isNull()) {
+  if (!detail::hasSelectValue(currentValue())) {
     return QString();
   }
   return fallbackSelectedLabel(currentValue());
@@ -5105,7 +5105,7 @@ void AdSelect::syncCurrentListRow(const QVariant& preferredValue, bool preserveS
   }
 
   int targetRow = -1;
-  if (preferredValue.isValid() && !preferredValue.isNull()) {
+  if (detail::hasSelectValue(preferredValue)) {
     for (int row = 0; row < rows_.size(); ++row) {
       const ModelRow& modelRow = rows_.at(row);
       if (modelRow.optionIndex < 0 || modelRow.optionIndex >= options_.size()) {

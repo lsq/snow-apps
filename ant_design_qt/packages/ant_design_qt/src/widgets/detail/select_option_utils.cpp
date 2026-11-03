@@ -11,7 +11,7 @@ namespace adqt::widgets::detail {
 QString syntheticRoleFieldName(int role) { return QStringLiteral("__role_%1").arg(role); }
 
 QVariant normalizeSelectValue(const QVariant& value) {
-  if (!value.isValid() || value.isNull()) {
+  if (!hasSelectValue(value)) {
     return QVariant();
   }
 
@@ -26,7 +26,7 @@ QVariant normalizeSelectValue(const QVariant& value) {
 
 QString selectValueKey(const QVariant& value) {
   const QVariant normalized = normalizeSelectValue(value);
-  if (!normalized.isValid() || normalized.isNull()) {
+  if (!hasSelectValue(normalized)) {
     return QString();
   }
 
