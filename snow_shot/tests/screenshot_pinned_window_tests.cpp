@@ -4175,7 +4175,9 @@ void fileBatchCreatesIndependentCenteredWindows() {
                     "file pins need unique persistence identities");
             identities.insert(record.id);
             originals.append(record.originalFilePath);
-            require(window->currentNativeGeometry() ==
+            // `presentPinnedImage` and the fit helpers work in content coordinates; the
+            // window inflates them by `pinnedShadowMargin()` per side (#1778).
+            require(snow_shot::presentation::pinnedContentRect(window->currentNativeGeometry()) ==
                         expectedGeometry.value(record.originalFilePath),
                     "each independent file window must retain its centered geometry");
         }
