@@ -7239,3 +7239,85 @@ C:/Qt/5.15.2/msvc2019_64/lib/fonts`），不显式装载字体时每个字形都
 
 判据：**凡是"改什么都相等"的断言，先确认被测对象可见**（字体、非空像素、非空集合），
 否则断言在测空气。"与中心像素不同的像素数"（`differing`）是最省事的可见性判据。
+
+#### 9.6.55 持久化记录的是**内容矩形**，控件矩形比它多一圈阴影边距
+
+上游重构成"内容矩形 / 外部矩形"之后，差分测试里四处夹具还在拿两者互比，永远不可能成立：
+
+```
+TF PROBE op=flipH before=24,24 352x212 after=40,40 320x180
+                                   ↑ currentNativeGeometry()（含 16px 边距）
+                                                   ↑ record.nativeGeometry（内容）
+```
+
+判据：`pinnedContentRect(currentNativeGeometry()) == config.nativeGeometry` 在
+`pinnedSmallExtentRemainsResponsive()` 里已经写明——`config.nativeGeometry` 就是内容矩形。
+平台层 `applyGeometry()` 收的也是外部矩形（探针实测 `authority=165,165 43x45` 恰好等于
+`pinnedOuterRect(QRect(181,181,11,13))`），所以"注入 1px 漂移"必须注入在外部空间里。
+
+同一类错误还有一处隐形的：OCR 文本层的父控件是内容控件（`layerAt=16,16`），而
+`canvasToViewTransform()` 给的是画布坐标（`canvasAt=0,0`，尺寸 352x212 = 整个窗口），
+两者差正好一个边距 16。比较前要用 `layer->mapTo(window)` 减 `canvas->mapTo(window)` 折算；
+注意 `mapTo` 要求祖先关系，跨容器要用共同祖先（用画布当父参数会触发
+`parent must be in parent hierarchy` 断言并终止进程）。
+
+#### 9.6.56 延迟初始化会给载荷**追加**一段，别用整串字节断言"没变"
+
+`pinnedSnapshotRetainsRecognitionBeforeDeferredSetup()` 断言 setup 之后 OCR 结果不变，实测：
+
+```
+EO PROBE same=0 earlyBytes=166 settledBytes=236
+EO PROBE settled=<..早期字节..>53524d44 01000000 3d7b226c617465782e.
+                                ↑ 视觉模型选择载荷（marker+version+len+JSON）
+```
+
+前面那份 OCR 字节一位不差，只是尾部多了一段"模型选择"。断言应是
+`settled.startsWith(early)`（加 `recognition.requests == 0`），而不是整串相等；
+整串相等还会在**序列化器规范化空字段**时误报——`table->error/code` 是 null 还是
+空串在 JSON 往返后不可区分，序列化器统一折成非 null 空串，测试侧期望必须同样折一次。
+
+#### 9.6.57 离屏无字体：文本断言在比空气，旋转时直接 abort
+
+`-platform offscreen` 的 freetype 没有字体目录。两类后果：
+
+1. 所有字形空白 ⇒ 像素比较等于比两张空白（§9.6.54），`before != after` 永远不成立；
+2. **更狠**：把零度量的字形放进旋转的 `QGraphicsItem` 里栅格化，Qt5 直接
+   `ASSERT: "mask.width() <= c.w && mask.height() <= c.h"`（`qtextureglyphcache.cpp:331`）
+   然后 `terminating the test process immediately`——不是测试失败，是整进程死。
+
+判据：只要夹具里出现文字渲染（哪怕只是复用别人的 OCR 结果），先
+`addApplicationFont(":/recording-test-fonts/SnowRecordingTestSans-Regular.ttf")` +
+`QApplication::setFont(...)`。看到 `qtextureglyphcache.cpp:331` 先怀疑字体，别去查几何。
+
+#### 9.6.58 `processEvents()` 不排空 `DeferredDelete`
+
+关闭一个顶层窗口走的是 `deleteLater()`；只用
+`while (!guard.isNull()) { processEvents(); msleep(1); }` 等它，会老老实实等到超时。
+
+```
+close merged translation pin        ← 5s 后仍非空
+```
+
+修法：循环里补 `QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete)`，
+与 `screenshot_pinned_window_tests.cpp` 里 `processUntilDeleted()` 的写法一致。
+
+#### 9.6.59 垫片丢掉 `format` 的代价，以及预乘取整差 1 带来的连锁
+
+`convertedToColorSpace(space, format)` 在 Qt5 只有单参版本，垫片原本把 format 丢掉。
+后果在一个夹具上暴露得很干净：
+
+```
+CS PROBE space=[000001cb] presentation=0 differing=1 first=100,80
+        got=80643219 want=80c86432      ← 预乘 vs 非预乘，只差半透明那一个像素
+```
+
+改成"先转空间、再 `convertToFormat(format, flags)`"（与 `snow_canvas_image.cpp` 里
+Qt5 分支同一写法）后 `expectedFmt=6 == paintedFmt=6`、`differing=0`。
+
+连带两个坑：
+
+- 引擎的 Qt5 路径保留源布局，而 Qt5 自己会先规范化成 `ARGB32_Premultiplied` 再重采样，
+  两边的**预乘取整差 1**。比较前先折到同一布局；仅当"布局本来就不同"时允许 ±1/通道，
+  布局相同时仍要求逐字节相等（这样 Qt6 的严格性一点没松）。
+- 折布局会长出额外的 `QImage` 副本，`checkRelease()` 判的是"释放后页已归还"，副本还活着
+  就判不过 ⇒ 参考图必须放进内层作用域，让它在 `checkRelease()` 之前析构。
