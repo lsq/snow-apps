@@ -40,6 +40,16 @@ QByteArray pngBytes(const QImage& image) {
     return bytes;
 }
 
+// The same request the managed path serves, answered by the plugin alone.
+QImage plainScaledReaderResult(const QByteArray& encoded, QSize scaledSize) {
+    QBuffer input;
+    input.setData(encoded);
+    require(input.open(QIODevice::ReadOnly), "open the plain reader fixture");
+    QImageReader reader(&input, "PNG");
+    reader.setScaledSize(scaledSize);
+    return reader.read();
+}
+
 void managedQtReader() {
     for (const auto format :
          {QImage::Format_RGBA8888, QImage::Format_RGBA64, QImage::Format_Grayscale16}) {
@@ -80,35 +90,68 @@ void managedQtReader() {
                 "dropping the decoded image must unmap its large pixel allocation");
 
         // Reader scaling may replace the preallocation. Its final image still
-        // needs managed storage and must retain the exact Qt scaling result.
+        // needs managed storage and must not change what the plugin produced.
         QBuffer scaledInput;
         scaledInput.setData(encoded);
         require(scaledInput.open(QIODevice::ReadOnly), "open the scaled reader fixture");
         QImageReader scaledReader(&scaledInput, "PNG");
         scaledReader.setScaledSize(QSize(1023, 511));
         QImage scaled = snow_shot::image_codec::readManagedImage(scaledReader);
-        const QImage scaledReference =
-            expected.scaled(QSize(1023, 511), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        qsizetype differing = 0;
-        if (scaled.size() == scaledReference.size()) {
-            for (int y = 0; y < scaled.height(); ++y) {
-                for (int x = 0; x < scaled.width(); ++x) {
-                    if (scaled.pixel(x, y) != scaledReference.pixel(x, y))
-                        ++differing;
-                }
-            }
-        }
-        require(scaled == scaledReference,
-                qPrintable(QStringLiteral("managed decoding must preserve the reader's fallback "
-                                          "scaling result: actual=%1x%2/%3 reference=%4x%5/%6 "
-                                          "differingPixels=%7")
+        // The managed path pre-allocates from `imageFormat()` and hands the buffer
+        // to the plugin, so its contract is "return exactly what a plain read of
+        // the same request would have". That is the only reference that compares
+        // the same operation on the same Qt -- measured on Qt 5.15.2, this PNG
+        // decodes to ARGB32 and every reader entry point reports ARGB32, while
+        // QImage::scaled() promotes to premultiplied for smooth scaling, so a
+        // reference built from it is a different format on Qt 5 even though both
+        // are correct. Qt 6 decodes to premultiplied, which is why this only
+        // showed up on the Qt 5 build.
+        const QImage readerReference = plainScaledReaderResult(encoded, QSize(1023, 511));
+        require(!readerReference.isNull(), "a plain reader must produce the scaled reference");
+        require(scaled == readerReference,
+                qPrintable(QStringLiteral("managed decoding must return the plugin's own scaled "
+                                          "raster: actual=%1x%2/%3 reference=%4x%5/%6")
                                .arg(scaled.width())
                                .arg(scaled.height())
                                .arg(static_cast<int>(scaled.format()))
-                               .arg(scaledReference.width())
-                               .arg(scaledReference.height())
-                               .arg(static_cast<int>(scaledReference.format()))
-                               .arg(differing)));
+                               .arg(readerReference.width())
+                               .arg(readerReference.height())
+                               .arg(static_cast<int>(readerReference.format()))));
+        // Colour is compared separately, after normalising both rasters to one
+        // format, because premultiplication legitimately differs by one unit on
+        // pixels next to an alpha edge: the source alpha here is 0xCDEF, so every
+        // pixel is semi-transparent and the two rasters can never be bit-equal.
+        const QImage scaledReference =
+            expected.scaled(QSize(1023, 511), Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+        const QImage actualRgb = scaled.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        const QImage referenceRgb =
+            scaledReference.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        qsizetype differing = 0;
+        int worstChannel = 0;
+        if (actualRgb.size() == referenceRgb.size()) {
+            for (int y = 0; y < actualRgb.height(); ++y) {
+                for (int x = 0; x < actualRgb.width(); ++x) {
+                    const QRgb actualPixel = actualRgb.pixel(x, y);
+                    const QRgb referencePixel = referenceRgb.pixel(x, y);
+                    if (actualPixel == referencePixel)
+                        continue;
+                    ++differing;
+                    worstChannel = std::max({worstChannel, qAbs(qRed(actualPixel) - qRed(referencePixel)),
+                                             qAbs(qGreen(actualPixel) - qGreen(referencePixel)),
+                                             qAbs(qBlue(actualPixel) - qBlue(referencePixel))});
+                }
+            }
+        }
+        require(actualRgb.size() == referenceRgb.size() && worstChannel <= 1,
+                qPrintable(QStringLiteral("managed decoding must preserve the reader's fallback "
+                                          "scaling colours: actual=%1x%2 reference=%3x%4 "
+                                          "differingPixels=%5 worstChannelDelta=%6")
+                               .arg(actualRgb.width())
+                               .arg(actualRgb.height())
+                               .arg(referenceRgb.width())
+                               .arg(referenceRgb.height())
+                               .arg(differing)
+                               .arg(worstChannel)));
         if (scaled.sizeInBytes() >= 1024 * 1024) {
             midpoint = scaled.constBits() + scaled.sizeInBytes() / 2;
             scaled = {};
