@@ -1347,16 +1347,17 @@ QImage captureCollageImage(QSize size, const std::function<QImage()>& capture, Q
         if (!lifetime->reservation)
             return {};
         lifetime->image = capture();
-        const QImage image = lifetime->image;
-        if (image.isNull() || image.size() != size || image.sizeInBytes() > bytes) {
+        // The captured raster is the only owner here, so its pixels can be wrapped writable.
+        // Qt 5 detaches an image that was built from const data, and that copy drops the cleanup
+        // below -- the cleanup is what keeps the admission alive for as long as the pixels are.
+        QImage& pixels = lifetime->image;
+        if (pixels.isNull() || pixels.size() != size || pixels.sizeInBytes() > bytes) {
             report(error, preparationError());
             return {};
         }
-        static_cast<void>(lifetime->reservation->resize(image.sizeInBytes()));
-        // A const view keeps admission attached to QImage's implicitly shared pixel lifetime.
-        // Metadata changes below do not duplicate the raster; writers detach as usual.
+        static_cast<void>(lifetime->reservation->resize(pixels.sizeInBytes()));
         QImage result(
-            image.constBits(), image.width(), image.height(), image.bytesPerLine(), image.format(),
+            pixels.bits(), pixels.width(), pixels.height(), pixels.bytesPerLine(), pixels.format(),
             [](void* context) { delete static_cast<CapturedImageLifetime*>(context); },
             lifetime.get());
         if (result.isNull()) {
@@ -1364,14 +1365,14 @@ QImage captureCollageImage(QSize size, const std::function<QImage()>& capture, Q
             return {};
         }
         [[maybe_unused]] const auto* imageOwner = lifetime.release();
-        result.setColorSpace(image.colorSpace());
-        result.setDevicePixelRatio(image.devicePixelRatio());
-        result.setDotsPerMeterX(image.dotsPerMeterX());
-        result.setDotsPerMeterY(image.dotsPerMeterY());
-        result.setOffset(image.offset());
-        result.setColorTable(image.colorTable());
-        for (const auto& key : image.textKeys())
-            result.setText(key, image.text(key));
+        result.setColorSpace(pixels.colorSpace());
+        result.setDevicePixelRatio(pixels.devicePixelRatio());
+        result.setDotsPerMeterX(pixels.dotsPerMeterX());
+        result.setDotsPerMeterY(pixels.dotsPerMeterY());
+        result.setOffset(pixels.offset());
+        result.setColorTable(pixels.colorTable());
+        for (const auto& key : pixels.textKeys())
+            result.setText(key, pixels.text(key));
         return result;
     } catch (const std::bad_alloc&) {
         report(error, preparationError());
