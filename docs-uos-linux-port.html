@@ -1303,7 +1303,7 @@ sudo apt install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 <td><strong>P5 双架构 + SIMD</strong> <em>(进行中)</em></td>
 <td>arm64 可用可跑</td>
 <td>NEON 内核；<code>SnowSimd.cmake</code> aarch64 分支</td>
-<td>飞腾真机截屏成功，帧率 ≥ 目标准。<strong>slice 1 已落代码</strong>：<code>snow-capture</code> 的 BGRA→RGBA 六个入口全部有 NEON 实现（9.4.18），<code>--all-features</code> 在非 Windows 上恢复可编译。<strong>剩余</strong>：§7.2 的 P1/P2 项（<code>raster.cpp</code> CRC32C、<code>snow_canvas_filter_*_avx2</code>、拼接/录制/OCR 标量容忍）、真机性能数字</td>
+<td>飞腾真机截屏成功，帧率 ≥ 目标准。<strong>slice 1 已由上游取代</strong>：BGRA→RGBA 的 NEON 内核现由上游 <code>simd_arm.rs</code> 提供（含 f16/HDR），本移植的 <code>simd_neon.rs</code> 已删除（9.4.18 后续修正），<code>--all-features</code> 在非 Windows 上恢复可编译。<strong>剩余</strong>：§7.2 的 P1/P2 项（<code>raster.cpp</code> CRC32C、<code>snow_canvas_filter_*_avx2</code>、拼接/录制/OCR 标量容忍）、真机性能数字</td>
 </tr>
 <tr>
 <td><strong>P6 打包与系统集成</strong> <em>(进行中)</em></td>
@@ -1343,10 +1343,11 @@ sudo apt install -y libgl1-mesa-dev libxcb-xinerama0-dev libxkbcommon-dev libxkb
 # 图像/编解码
 # 注意：**不装** libheif-dev / libjxl-dev。这两个编解码器由 scripts/build-linux-deps.sh
 # 带固定版本自编（见 9.6.13），发行版版本比代码老一代；两个来源并存 = 自编失败时静默回落到
-# 老版本，唯一正确的做法是让 find_package 大声失败。libde265/x265/brotli/lcms2 要装，
-# 它们是自编 HEIF / JXL 的后端。
+# 老版本，唯一正确的做法是让 find_package 大声失败。libde265/x265/aom/brotli/lcms2 要装，
+# 它们是自编 HEIF / JXL 的后端（aom 就是 AVIF 编码器，缺它时设置里能选 AVIF、保存时报
+# &quot;No encoder is available&quot;，见 9.6.13 的修订）。
 sudo apt install -y libpng-dev libjpeg-dev libwebp-dev libgif-dev libtiff-dev \
-    libde265-dev libx265-dev libbrotli-dev liblcms2-dev zlib1g-dev libtinyxml2-dev
+    libde265-dev libx265-dev libaom-dev libbrotli-dev liblcms2-dev zlib1g-dev libtinyxml2-dev
 # FFmpeg（录制/导出链的绑定，§5.1 决定 Linux 用发行版包）
 # Rust 侧 ffmpeg-next -&gt; ffmpeg-sys-next 的 build 脚本按 pkg-config 找这六个模块；
 # C++ 侧链接同一组。libavfilter 不是可选项：ffmpeg-next 的 &quot;filter&quot; feature
@@ -8335,6 +8336,157 @@ versionless 目标（<code>Qt::Core</code>）只是 <code>Qt5::Core</code> 的 <
 产品侧每一步都在前进：deb 全绿 → AppImage 打得出来 → 打得对 → 布局齐全 → <strong>整条链路绿</strong>。
 红在哪一行，先问那行是产品还是尺子。</p>
 <hr>
+<h4>9.6.48 run 41418087468：AVIF 在 Linux 上"能选不能存"——被 default-features 骗了</h4>
+<p>run 41418087468（<code>73132118</code>）把失败从 113 条压到 99 条（arm64），剩下的失败里有两条是
+<strong>同一个确定性的功能缺口</strong>：</p>
+<pre><code>AVIF (libheif/AOM) encode failed: No encoder is available for the requested format.
+quick save must create the configured directory and use format/name settings:
+  format=avif stage=5 error=No encoder is available for the requested format.
+</code></pre>
+<p><code>stage=5</code> 是编码阶段，<code>format=avif</code> 是测试里那一轮循环的当前格式 —— 也就是"设置里选得出
+AVIF、文件对话框里列得出 AVIF、MCP 的格式表里也有 AVIF，但真去存就报没有编码器"。</p>
+<p><strong>根因在 9.6.13 自己的注释里</strong>：当时写的是"overlay port 的 default-features 只有 <code>hevc</code>，
+所以 Windows 也没有 aom，Linux 上补 aom 就不一致了"，于是 <code>WITH_AOM_DECODER=OFF</code> /
+<code>WITH_AOM_ENCODER=OFF</code>。但 <code>vcpkg.json</code> 的两个架构条目都是显式的</p>
+<pre><code class="language-json">{ &quot;name&quot;: &quot;libheif&quot;, &quot;default-features&quot;: false, &quot;features&quot;: [&quot;aom&quot;] }
+</code></pre>
+<p><code>default-features: false</code> + <code>features: ["aom"]</code> —— Windows 侧<strong>只有 aom</strong>，连 hevc 都没有。
+只看 port 的 <code>default-features</code> 而不看 manifest 的调用点，得出的结论正好相反。</p>
+<p>修法（三处一起，缺一不可）：</p>
+<ol>
+<li><strong><code>libaom-dev</code> 进 apt 清单</strong>（§9.1 同步）。aom 走发行版，和 brotli / lcms2 同一档：
+   libheif 用它自己的 <code>cmake/modules/FindAOM.cmake</code>，那是 pkg-config 查找，<code>.deb</code> 提供的
+   <code>aom.pc</code> 就够，不需要 CMake config。libheif 1.21 要求 aom ≥ 3.0，24.04 是 3.8.2。</li>
+<li><strong><code>WITH_AOM_DECODER=ON</code> / <code>WITH_AOM_ENCODER=ON</code></strong>，并<strong>必须</strong>同时应用 overlay port 的
+   <code>aom-encoder-context-lifetime.patch</code>。带 alpha 的静图会让 libheif 在同一个 encoder 对象上
+   先编彩色再编 alpha，上游 1.21 会对一个仍然活着的 context 再调一次 <code>aom_codec_enc_init</code>
+   —— Windows 从有 AVIF 那天起就带着这个补丁。linux-deps 脚本走的是未打补丁的 release
+   tarball，所以补丁要显式应用（<code>apply_patch</code>，与 OpenCV 那条同一个函数）。</li>
+<li><strong>两条断言，因为"编解码器没编进去"是静默的</strong>：配置前 <code>pkg-config --exists aom</code>；安装后
+   <code>ldd libheif.so.* | grep libaom</code> —— 后者才是"AVIF 真的在库里"的证据。libheif 跳过某个
+   codec 时不打印任何东西。</li>
+</ol>
+<p>另外把 libheif 的 stamp key 从 <code>1.21.2</code> 改成 <code>1.21.2+aom</code>：<strong>只按版本号打戳的话，改开关
+对已经构建过的工作站完全无效</strong> —— stamp 命中就跳过，AVIF 永远缺着，而 CI 每次都从零构建，
+两边症状不一致。</p>
+<p>判据：产物里 <code>libheif.so</code> 的 NEEDED 里有 <code>libaom.so.*</code>；<code>quick-save-export</code> 与
+<code>export-artifact</code> 的 avif 轮次通过（本地 Windows 上同一条循环一直通过，因为 vcpkg 侧
+<code>aom</code> 特性是开着的 —— 这正是"两个平台的同一个程序"应当表现一致的地方）。</p>
+<p><strong>一个遗留风险，记在这里而不是等它变成安装失败</strong>：aom 走发行版就等于走 <code>Depends</code>，
+<code>dpkg-shlibdeps</code> 会把它写成 24.04 的 <code>libaom3</code>；而 UOS 20（Debian 10 底）只有 <code>libaom0</code>，
+soname 不同。libde265/x265 早就是这个处境，所以这不是新问题，只是 AVIF 让它多了一个包。
+真要在"裸 UOS 20"上装 deb，出路是把 aom 也当私有库带进包（与 libjxl 同一套闭包机制）；
+CI 目前只验证 24.04，这条留到真机验证阶段一起定。</p>
+<hr>
+
+<h4>9.6.49 <code>#ifndef Q_OS_MACOS</code> 不是 <code>#ifdef Q_OS_WIN</code>（设置项版）</h4>
+<p>第二轮把 <code>settingscatalog.cpp</code> 里 4 个采集项的平台期望改成三分（macOS / Windows / 其他），
+但那只是<strong>让测试承认现状</strong>：Linux 上确实挂着这些项。现状本身是错的。</p>
+<p>四个项分别是 <code>screenshot.api-mode</code>（Auto/DXGI/WGC/GDI）、<code>screen-recording.api-mode</code>、
+<code>screenshot.window-element-api</code>（MSAA/UIA）、<code>screenshot.restore-original-screen-colors</code>。
+它们描述的是 Windows 的采集后端与色彩滤镜，而守卫写的是 <code>#ifndef Q_OS_MACOS</code> ——
+读起来像"非苹果"，实际在 Linux 上同样成立。于是 Linux 版在一条根本不读这些键的
+X11/Wayland 管线上摆出了"抓屏 API：DXGI"，还给一个后端是 stub、<code>hasService()</code> 恒 false 的
+选择器（C.12）摆出了窗口元素 API。</p>
+<p>修法是让守卫说真话：4 处 <code>#ifndef Q_OS_MACOS</code> → <code>#ifdef Q_OS_WIN</code>。<strong>Windows 与 macOS 的
+真值完全不变</strong>，所以这条改动只影响 Linux：<code>Advanced capture</code> 整节消失，录制页少一行 API 选择；
+两个键的存储值与 <code>SettingsSelectBinding</code> 映射都保留（只是不再提供入口）。</p>
+<p>连带的三处 bookkeeping：Linux 的 <code>sectionCount</code> 52 → 51（少的就是 <code>capture-compatibility</code>）；
+测试里 <code>nonMacCaptureItems</code> 这个"非 mac 但也有"的集合删掉，改成 macOS/Linux 都断言缺席；
+<code>settings_page_loading_tests</code> 的 <code>ScreenshotCaptureCompatibility</code> 重置用例从
+<code>#ifndef Q_OS_MACOS</code> 改成 <code>#ifdef Q_OS_WIN</code>（Linux 上那节已经不存在，重置自然是空操作）。</p>
+<p><strong>门禁</strong>：新增 <code>scripts/check-linux-windows-only-settings.py</code>，进
+<code>check-linux-packaging.sh</code>。它盯两件事 —— 定义行所在分支、以及<strong>每个调用点</strong>所在分支，
+都必须有显式的 Windows 条件（<code>#ifdef</code> / <code>#if defined</code> / <code>#elif</code>）。只盯定义是不够的：
+把调用点单方面改回 <code>#ifndef Q_OS_MACOS</code>，定义仍在 Windows 分支里，项就重新出现在 Linux 上，
+而这正是最初那个 bug 的形状。反向验证：只把调用点改回去 → 门禁红（3 条），还原 → 绿。</p>
+<hr>
+
+<h4>9.6.50 <code>QVariant::isNull()</code> 在 Qt5 与 Qt6 不是同一件事</h4>
+<p>Qt5 里 <code>QVariant(QString()).isNull() == true</code>；Qt6 把 <code>isNull()</code> 收窄成"invalid 或空指针"。
+于是 <code>isValid() &amp;&amp; !isNull()</code> 这种"有值"判据在 Qt6 上是恒等于 <code>isValid()</code> 的废话，在 Qt5 上却会
+<strong>静默丢掉一个类型正确、内容为空的值</strong>。</p>
+<p>本机 Qt 5.15.2 实测：</p>
+<pre><code>QVariant()          valid=0 null=1
+QVariant(QString()) valid=1 null=1   &lt;- 分歧点
+QVariant(&quot;&quot;)        valid=1 null=0
+QVariant(&quot; \t &quot;)    valid=1 null=0
+</code></pre>
+<p><code>AdSelect</code> 正好踩到：<code>normalizeSelectValue()</code> 的注释已经写明"null 与 empty 必须共享同一个键
+（QDataStream 区分二者）"，但函数开头那句 <code>if (!value.isValid() || value.isNull()) return {};</code>
+在 Qt5 上先把 null QString 拦掉了，后面那段 trim 折叠根本没机会执行。表现是
+<code>setCurrentValue(QString())</code> 变成"清空选择"，<code>adqt-select</code> 的
+<code>emptyStringValuesSelectTheirLabel</code> 第一个组合就红。</p>
+<p>修法：把"有值"收敛到一个 helper（<code>detail::hasSelectValue()</code> = <code>isValid()</code>），归一化、取键、
+<code>setCurrentValue</code>、<code>currentText</code>、列表行同步五处一起换。Qt6 行为不变。</p>
+<p><strong>门禁思路</strong>：全仓搜 <code>isNull()</code> 搭配 <code>QVariant</code> 的地方，逐个人工判"这里想表达的是 invalid 还是
+null"。不能机械替换 —— <code>QPixmap::isNull()</code> / <code>QString::isNull()</code> 是另一回事。</p>
+
+<h4>9.6.51 Qt 光栅 clip 是"向外取整"，<code>toPoint()</code> 看不见它</h4>
+<p>OCR 字形缓存那条守卫原本比较 <code>device.map(clip.topLeft()).toPoint()</code> 与缓存侧的同一表达式，
+想判断"取整后的 clip 是否相同"。但 Qt 建立光栅 clip 时对<strong>左/上取 floor、右/下取 ceil</strong>，
+而 <code>toPoint()</code> 是<strong>四舍五入</strong> —— 一个只在底边上差一行的 clip，四舍五入后完全一样。</p>
+<p>实测（dpr=2、canvas 变换 1.25）：</p>
+<pre><code>direct clip = 89,84 551x45
+cached clip = 89,84 551x46     &lt;- 缓存多一整行
+</code></pre>
+<p>缓存把 clip 平移到整数像素后再取整，加法顺序变了就会跨过边界，于是缓存多画一整行选区高亮。
+改成比较 <code>mapRect(...).toAlignedRect()</code>；原来的角点比较保留，它还能覆盖亚像素那类情况。</p>
+<p>判定信号是测试侧的 <code>ink cached=40376 direct=39825 solid_violations=551</code>：差异像素全部落在
+"直绘是纯色"的位置 ⇒ 是画错位置，不是舍入误差。<strong>只看差异像素数量会把它误判成容差问题。</strong></p>
+
+<h4>9.6.52 "超长文件名 = 保存失败"这条前提被上游 #2004 拆掉了</h4>
+<p><code>2fe8b10c</code>（#2004，导出路径支持时间变量）给<strong>每个路径组件</strong>加了截断
+（<code>composeExportFileName</code> 上限 248 UTF-8 字节，留 7 字节给 <code>QSaveFile</code> 的 <code>.XXXXXX</code>）。
+于是"用 300 个 <code>x</code> 当文件名制造确定性文件错误"这招彻底失效：写入<strong>成功</strong>，文件名被截到 248。
+三处仍按老前提写的用例因此一起红，而它们的失败文本会把人带偏：</p>
+<pre><code>DRAGFAIL PROBE executor reached path=.../snow-shot-drag-pyNagI/xxx…xxx.png exists=1 size=155
+encoding failure is reported
+</code></pre>
+<p>真正的红是最后那句 <code>wait</code> 超时（<code>failed</code> 永远是 false，因为根本没失败），不是它上面那句
+"failed export must not start native drag" —— 后者是探针里 hoisted executor <code>throw</code> 自己造的假象。
+<strong>失败文本先分辨是"断言失败"还是"等待超时"，再决定改产品还是改夹具。</strong></p>
+<p>这条前提现在还能不能造出来？不能，三条路都堵死：</p>
+<ul>
+<li>非法字符（<code>/ \ : * ? " &lt; &gt; |</code>）在 <code>normalizeFilenameFormat</code> 就被 <code>setAutoSaveFilenameFormat</code> 拒掉；</li>
+<li>长度被截断吃掉了；</li>
+<li>目标目录由 <code>automaticDirectories()</code> 给出，配置目录 <code>mkpath</code> 失败还会回落到 Pictures/Documents。</li>
+</ul>
+<p>所以三处只能换注入面，各自不同：</p>
+<table>
+<thead>
+<tr>
+<th>用例</th>
+<th>原因</th>
+<th>新构造</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>drag export</td>
+<td>暂存目录写死 <code>QDir::temp()</code>，文件名格式来自 schema 校验过的设置</td>
+<td>新增 <code>setStagingRoot()</code>，把根指向一个<strong>普通文件</strong> ⇒ <code>QTemporaryDir</code> 建不出来（<code>ENOTDIR</code>/<code>ERROR_DIRECTORY</code>，两端一致）</td>
+</tr>
+<tr>
+<td>pin execution auto-save</td>
+<td><code>ScreenshotAutomaticSaveRequest</code> 是结构体字段，<strong>不过 schema</strong></td>
+<td><code>filenameFormat = "blocked/name"</code>，正是保存层对"老配置里带分隔符"的拒绝分支</td>
+</tr>
+<tr>
+<td>shared image export</td>
+<td>同上，但走设置</td>
+<td>改成断言新行为：组件被<strong>截短</strong>、<code>copyFile</code> 仍然发布那个有界名字</td>
+</tr>
+</tbody>
+</table>
+<p>第二个用例还有个坑值得记：它先 <code>presentPinnedArtifact(..., request)</code> 再改
+<code>automatic.filenameFormat</code> 并 <code>request = automatic</code>，<strong>这是死代码</strong> —— 服务早按值收下了第一份请求。
+探针 <code>ok=1 path=.../pin-0-4.bmp fmt=blocked/name</code> 一眼定案：实际保存用的是<strong>第一个</strong>格式。
+把失败构造放在第二处，测试会"看起来改了却毫无变化"。凡是"改完没反应"，先查请求是不是被按值收走。</p>
+<p>反向验证：把 drag export 的格式还原成 300 个 <code>x</code>，该用例立刻回到 <code>wait</code> 超时（红）；
+换回注入根即绿。三组本地全绿：<code>snow-shot-pinned-drag-export-tests</code>、
+<code>snow-shot-pinned-shared-image-export-tests</code>、<code>snow-shot-pin-execution-autosave-tests</code>。</p>
+
 <h2 id="10-工作量-优先级矩阵">10. 工作量 / 优先级矩阵</h2>
 <table>
 <thead>
