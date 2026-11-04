@@ -1063,20 +1063,31 @@ void chunkBoundariesAndConcurrencyMatchQt() {
 } // namespace
 
 int main() {
-    rawBuffersReturnPages();
-    imageSharingAndPaintingPreserveOwnership();
-    imageLayoutAndInvalidSizes();
-    monochromeImagesPreserveDefaultPalette();
-    rasterOperationsPreservePixelsAndReleasePages();
-    pixelArraysReleaseOriginalCapacity();
-    zeroedImagesInitializePixelsAndPadding();
-    colorConvertedPremultipliedRowsKeepStraightAlpha();
-    borrowedRgbaRowsMatchQt();
-    borrowedRgbaRowsRejectInvalidBoundsAndAliasing();
-    formatsAndAlphaBoundariesMatchQt();
-    packedFormatsSurviveFractionalDpr();
-    directRgba64ExpansionMatchesQt();
-    arbitraryRotationsMatchQt();
-    chunkBoundariesAndConcurrencyMatchQt();
+    // The Linux build has crashed inside libQt5Gui during this suite with no assertion
+    // and no symbol to name. `SNOW_TEST_TRACE=1` prints which fixture was running so the
+    // next run localises it instead of blaming the whole binary.
+    const bool trace = qEnvironmentVariableIsSet("SNOW_TEST_TRACE");
+    const auto step = [trace](const char* name, void (*fixture)()) {
+        if (trace) {
+            std::fprintf(stderr, "STEP %s\n", name);
+            std::fflush(stderr);
+        }
+        fixture();
+    };
+    step("raw-buffers", &rawBuffersReturnPages);
+    step("sharing-and-painting", &imageSharingAndPaintingPreserveOwnership);
+    step("layout-and-invalid-sizes", &imageLayoutAndInvalidSizes);
+    step("monochrome-palette", &monochromeImagesPreserveDefaultPalette);
+    step("raster-operations", &rasterOperationsPreservePixelsAndReleasePages);
+    step("pixel-arrays", &pixelArraysReleaseOriginalCapacity);
+    step("zeroed-images", &zeroedImagesInitializePixelsAndPadding);
+    step("premultiplied-rows", &colorConvertedPremultipliedRowsKeepStraightAlpha);
+    step("borrowed-rows", &borrowedRgbaRowsMatchQt);
+    step("borrowed-rows-bounds", &borrowedRgbaRowsRejectInvalidBoundsAndAliasing);
+    step("formats-and-alpha", &formatsAndAlphaBoundariesMatchQt);
+    step("fractional-dpr", &packedFormatsSurviveFractionalDpr);
+    step("rgba64-expansion", &directRgba64ExpansionMatchesQt);
+    step("rotations", &arbitraryRotationsMatchQt);
+    step("chunk-boundaries-and-concurrency", &chunkBoundariesAndConcurrencyMatchQt);
     return 0;
 }

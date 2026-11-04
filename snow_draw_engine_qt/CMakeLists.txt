@@ -374,7 +374,10 @@ if(SNOW_DRAW_ENGINE_QT_BUILD_TESTS)
     add_executable(snow-canvas-image-tests tests/snow_canvas_image_tests.cpp)
     target_link_libraries(snow-canvas-image-tests PRIVATE snow_canvas_image snow_pixel_buffer)
     add_test(NAME snow-canvas-image-tests COMMAND snow-canvas-image-tests)
-    set_tests_properties(snow-canvas-image-tests PROPERTIES LABELS "unit" TIMEOUT 30)
+    # TEMPORARY: this suite crashes inside libQt5Gui on Linux without naming a fixture.
+    # The trace names the last fixture that started; remove once the crash is located.
+    set_tests_properties(snow-canvas-image-tests PROPERTIES LABELS "unit" TIMEOUT 30
+        ENVIRONMENT "SNOW_TEST_TRACE=1")
     # Test binaries must report failures as stderr output plus a non-zero
     # exit code instead of blocking on modal dialogs.
     snow_link_test_cli_guard(qt)

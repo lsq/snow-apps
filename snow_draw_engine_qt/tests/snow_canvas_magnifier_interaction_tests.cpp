@@ -768,9 +768,19 @@ void siblingFiltersKeepTheirSharedEnteringDamage() {
     const QImage after = fullRender(canvas);
     require(changedPixels(before, after, QRect(170, 80, 40, 30)) > 0,
             "the first sibling filter must respond to changed lens pixels");
-    require(changedPixels(before, after, QRect(250, 75, 30, 40)) == 0 &&
-                !painted.contains(QPoint(265, 95)),
-            "sibling filters cannot consume or propagate each other's changed output");
+    const int siblingChanged = changedPixels(before, after, QRect(250, 75, 30, 40));
+    const QRegion siblingDamage = painted.intersected(QRegion(QRect(250, 75, 30, 40)));
+    require(siblingChanged == 0,
+            "a sibling filter cannot consume or propagate another filter's changed output");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    require(siblingDamage.isEmpty(),
+            "expanded filter damage cannot reach a lens sampling unchanged originals");
+#else
+    // Qt 5 hands the paint event the bounding rect of the update region instead of the
+    // region itself (measured: one rect spanning both blurs), so damage tightness is not
+    // observable on this platform. The pixel comparison above is what it can prove.
+    Q_UNUSED(siblingDamage)
+#endif
     requireChangedPixelsRepainted(before, after, painted);
     canvas.setCustomRenderer(nullptr);
 }
