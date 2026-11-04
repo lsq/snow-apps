@@ -7577,6 +7577,29 @@ job id 从 `gh-ci.py jobs <run-id>` 的 `== [<id>] <name>:` 行取。
 "packed 8 位源 + 分数 DPR 调 `transformed()`"（§9.6.61），Release/‑O2 下同样会踩。
 所以下一次 run 的 delta 同时是这条修复的**反向验证**：它若还崩，说明 Linux 上另有第二个崩溃点。
 
+`41801815105` 的 run 说明它没修掉：仍然 `***Exception: SegFault  2.19 sec`，主线程挂在
+`libQt5Gui.so.5` 里，其余 5 条 `Thread (pooled)` 全在 `QWaitCondition::wait` 上空转——
+即**崩的是主线程，不是 worker**。本机（Windows + offscreen）这整个套件是绿的，
+所以只能靠 CI 定位。既然没有符号可用，就先让 exe 自己报位置：
+
+```cpp
+const bool trace = qEnvironmentVariableIsSet("SNOW_TEST_TRACE");
+const auto step = [trace](const char* name, void (*fixture)()) {
+    if (trace) { std::fprintf(stderr, "STEP %s\n", name); std::fflush(stderr); }
+    fixture();
+};
+step("raw-buffers", &rawBuffersReturnPages);
+…
+step("chunk-boundaries-and-concurrency", &chunkBoundariesAndConcurrencyMatchQt);
+```
+
+配 `set_tests_properties(snow-canvas-image-tests … ENVIRONMENT "SNOW_TEST_TRACE=1")`，
+下一次 run 的 ctest 段最后一行 `STEP …` 就是崩溃前跑到的夹具。**定位后两处一起删掉**——
+这一条是为诊断临时加的，不能留在门禁里当永久噪声。
+
+注意 `main()` 里那串裸调用改写成 `step(…)` 之后，**参数顺序就是执行顺序**，
+改顺序会改变崩溃点，别顺手整理。
+
 #### 9.7.2 字体度量：把「Windows 上恰好相等」写成了断言
 
 | 用例 | 断言 |
@@ -7826,6 +7849,73 @@ windowchrome.cpp.obj : error LNK2005: snowTestFlushWindowComposition 已在 scro
 又各自单独编译了 `formfields.cpp` / `themecolorscheme.cpp`。MSVC 会把"成员被拉进来 + 同一符号另有一份
 定义"当硬错误，GNU ld 对归档成员宽容，于是 **Linux CI 链接通过、Windows 本机过不了**——
 仓库里没有 Windows 测试工作流，所以一直没人发现。这两条只能由 CI 判决。
+
+#### 9.7.4b 光栅器的两处「Qt 6 精确、Qt 5 差一格」
+
+`-magnifier-render`、`-filter-render`、`-serial-number-font`、`-magnifier-interaction` 这四条读下去，
+全都栽在同一个模式上：**Qt 6 的像素/状态可以精确比较，Qt 5 不行**。三条本机（Windows + Qt 5.15 +
+offscreen）就红，所以这次是本地改到绿，不靠 CI 猜。
+
+**（1）放大镜渐变透明度**——`gradient opacity must increase from 16% to 42%`。
+
+产品的 stops 是 `0.08 / 0.27`（`snow_canvas_magnifier_renderer.cpp`，`5d0b3a28` 从 `0.04 / 0.16` 提上来的），
+测试期望却是 `0.16 + 0.26 * f`。实测本机同一行三点的 alpha 是 **23 / 29 / 34**，
+代入 stop 公式 `255 * (0.08 + 0.19f) * 0.7` 完全吻合——**Qt 5 只画一遍**，
+Qt 6 那条路径把同一块 strip 合成两遍（这正是"复用合成裁剪"那次改动的效果），
+所以那边看到的是接近翻倍的 41 / 47 / 52，测试就照那个写了。
+
+按版本分开写，两边都保留断言：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                const int expected = qRound(stroke.a * (0.16 + 0.26 * fraction) * 0.7 * callerOpacity);
+#else
+                // 产品写的是 8% -> 27%；Qt 6 的两遍合成把它变成 16% -> 42%。
+                const int expected = qRound(stroke.a * (0.08 + 0.19 * fraction) * 0.7 * callerOpacity);
+#endif
+```
+
+失败消息里带上整行采样值与 `direct-paints` 计数，下一次不必再反推。**渐变本身不是产品缺陷**，
+是同一个 stops 在两个 Qt 里的合成次数不同；文档 §6 里"连接线在 Qt5 上偏淡"这条可以据此收紧。
+
+**（2）分块采样的定点相位**——`tile origins and coverage clips must preserve canonical sampling`。
+
+原代码认为"整数步长可以和整图逐像素相等，只有分数步长才会把 RGB 修约一位"。Qt 6 成立，
+Qt 5 不成立：同一块区域换个 tile 原点重画，覆盖度会被重新折进每个通道，
+实测 `#ac6449` vs `#ad6349`、alpha `255` vs `254`——**RGB 和 alpha 都差一格**。
+
+```cpp
+bool sameTileSample(const QColor& left, const QColor& right) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return left == right;
+#else
+    return qAbs(left.alpha() - right.alpha()) <= 1 && qAbs(left.red() - right.red()) <= 1 &&
+           qAbs(left.green() - right.green()) <= 1 && qAbs(left.blue() - right.blue()) <= 1;
+#endif
+}
+```
+
+**（3）背景渲染器看到的字体**——`offscreen serial scenes must preserve the incoming font …`。
+
+失败时才看得出来：`toString()`、`key()`、`renderHints()` 全相等，`operator==` 却是 false。
+原因是 **Qt 5 的 `setFont()` 会拿绘制设备的默认字体做一次解析并丢掉 resolve mask**，
+两个"可见属性完全一致"的 `QFont` 因此不相等。判据换成 `key()`（Qt 自己比较字体用的就是它），
+和 `snow-canvas-text-draft-tests` 里那条串号字体断言保持一致：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const bool sameFont = actual == expectedFont;
+#else
+        const bool sameFont = actual.key() == expectedFont.key();
+#endif
+```
+
+**（4）兄弟滤镜的"损伤紧不紧"** ——`sibling filters cannot consume or propagate …`。
+
+像素是对的（`changedPixels == 0`），红的是"损伤区域不该盖住另一条滤镜"这条**紧致性**断言。
+实测 Qt 5 交给 `QPaintEvent` 的是更新区域的**包围盒**（一个覆盖两块模糊的矩形），
+不是区域本身；Qt 6 才给精确区域。于是：Qt 6 继续要求 `painted` 与兄弟滤镜区域不相交，
+Qt 5 只断言像素不变，并把理由写进注释——平台看不见的东西不能当断言。
 
 #### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
 
