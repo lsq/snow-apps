@@ -7502,3 +7502,132 @@ const QImage oracle = qtTransformReference(large, transform, Qt::FastTransformat
 
 命名上这三条都属于同一类：**"Qt5 也能跑、但跑的不是同一件事"**。区分办法只有一个——把矩阵跑全，
 让每一格都有具体数值可比；"看起来没问题"的格子最贵。
+
+#### 9.6.64 「假红灯」：陈旧二进制 + GUI 子系统吞掉 QTest 输出
+
+本机那份 40 条的红灯清单里，至少一条是假的：`adqt-pagination-tests` 的源码 mtime（11-01 09:00）晚于
+exe（10-31 10:07），而测试树里还躺着 **0 字节的 `adqt-segmented-tests.exe`**。也就是说那批"红"是在一棵
+半新半旧的构建树上量的——重建之后 `adqt-pagination-tests` 直接绿，一个字符都不用改。
+
+判据写在前面：**报告红灯之前先确认 exe 比源码新**。`ls -l` 比一眼断言便宜得多。
+
+顺着这条挖出第二个坑，更隐蔽：**GUI 子系统的测试 exe 在终端里一个字都不打**。同一批测试里，
+链 `adqt::core` 的小 exe 正常输出，链 `adqt::widgets` 的 15 MB exe（`QTEST_MAIN` → `QApplication`）
+连 `********* Start testing` 都不打，`ctest --output-on-failure` 也是空的——只有一个
+
+```
+1/1 Test #43: adqt-pagination-tests ....***Failed    2.70 sec
+```
+
+没有失败原因，什么都看不出来。Windows 上 GUI 子系统进程只有在句柄被重定向时才写 stdout，而这里即使是
+管道/文件重定向也拿不到，等于测试结果被整包丢掉。
+
+绕过办法是让 QTest 自己开文件写，完全不碰 std 句柄：
+
+```bash
+./adqt-pagination-tests.exe -o /tmp/pg.txt,txt
+```
+
+`-o` 立刻把所有日志落盘（`PASS`/`FAIL!`/`Totals` 全在），上面那条红灯的第一手原因
+（`installTranslator` 返回 FALSE）就是这么拿到的。
+
+这两条合起来说明一件事：**"测试红"这个信号本身要先验证可信度**——比它新不新、你看不看得见它的输出，
+任何一条不成立，后面所有排查都是白干。
+
+#### 9.6.65 CI 日志下载固定在 707046 字节处断流
+
+`gh-ci.py logs` 一直抛 `http.client.IncompleteRead(707046 bytes read)`。加了三重重试之后**每次仍然停在同一个字节数**，
+说明不是网络抖动，而是这条链路上单个流式响应被截断（707046 ≈ 690 KB）。
+
+`http.client.IncompleteRead` 的一个恶劣之处：`resp.read()` 已经消费掉的字节随异常一起丢，没法续传。
+
+两条修法叠起来用：
+
+1. `request()` / `download()` 全部走 `read_body()`，对 `IncompleteRead` / `ConnectionResetError` / `TimeoutError`
+   重试四次（每次重新签自己的 302，所以重头拉是安全的）；
+2. 重试也救不回来的，改成**分段 Range 拉取**：每次重新解析 `/actions/jobs/<id>/logs` 的签名 URL，
+   带 `Range: bytes=a-b` 取 256 KB，拼起来。blob 存储认 Range，于是 3.95 MB 的日志能完整落地。
+
+```python
+req = urllib.request.Request(target, headers={"Range": f"bytes={len(collected)}-{len(collected)+CHUNK-1}"})
+```
+
+代价是每段一次 302，慢（约 3 分钟）；但"看不到日志"会让整轮 CI 白跑，这笔账划算。
+
+### 9.7 Linux CI 单元测试残留清单（2026-11-04，56/829）
+
+`962cb5ab` 上 Linux x64 Release 的 `ctest`：**93% passed, 56 failed out of 829**（573 s）。构建、deb、AppImage、
+元数据校验全绿，红的全在单元测试这一步。
+
+先说结论：这 56 条**不是 56 个独立问题**，而是几类根因在不同套件上的投影。
+
+#### 9.7.1 崩溃（4 条，最高优先）
+
+| 用例 | 现象 |
+|---|---|
+| `adqt-button-signal-lifetime-tests` | `activationAllowsOwnerDeletion()` signal 11，栈是空的 |
+| `snow-canvas-image-tests` | **SEGFAULT** |
+| `snow-shot-mcp-document-tests` | SEGFAULT |
+| `snow-shot-mcp-application-tests` | SEGFAULT |
+
+`snow-canvas-image-tests` 这一条在 `dd92facf` 里应该已经跟着修掉了：本机崩溃点是
+"packed 8 位源 + 分数 DPR 调 `transformed()`"（§9.6.61），Release/‑O2 下同样会踩。
+所以下一次 run 的 delta 同时是这条修复的**反向验证**：它若还崩，说明 Linux 上另有第二个崩溃点。
+
+#### 9.7.2 字体度量：把「Windows 上恰好相等」写成了断言
+
+| 用例 | 断言 |
+|---|---|
+| `adqt-button-lifetime-tests` | `sizeHint() == QSize(horizontalAdvance(text), metrics.height())` 精确相等 |
+| `snow-shot-settings-navigation-tests` | 同上，换了个套件 |
+
+两边用的是同一个 `QFont`，但 `AdButton::sizeHint()` 走的是 style 里的度量（可能过 `QFontMetricsF` 再取整），
+`QFontMetrics` 走整型 advance，Linux 的 DejaVu 字距落在 .5 边界上时两者差 1 px 是必然的。
+这类断言该改成"±1 px 内相等"，而不是把 Windows 的取整结果当规范。
+
+#### 9.7.3 鼠标 / 悬停坐标（5 条）
+
+`snow-shot-physical-cursor-tests`（fractional hover）、`snow-shot-toolbar-guide-hover-tests`（global coordinates）、
+`snow-shot-screenshot-selection-toolbar-hover-tests`、`snow-shot-export-dialog-placement-tests`、`snow-canvas-tablet-input-tests`
+（subpixel 位置 / 压力归一化）。共性是**合成事件在 offscreen 与 Windows 上的坐标口径不同**（§9.6 里已记过
+窗口级投递被 `QWidgetWindow` 四舍五入成整数）。这批要么改成直投 widget，要么显式按平台分叉。
+
+#### 9.7.4 文本渲染 / 字形缓存（7 条）
+
+`snow-canvas-text-draft-tests`、`snow-canvas-text-render-cache-tests`（同一条 882 px 不一致：
+`reference-only=1 candidate-only=2 both-inked=879 cold=1 builds=3 hits=0`）、`snow-canvas-serial-number-render-tests`、
+`snow-canvas-serial-number-font-tests`、`snow-canvas-filter-render-tests`、`snow-shot-screenshot-canvas-renderer-tests`、
+`snow-shot-ocr-canvas-renderer-tests` / `snow-shot-ocr-line-box-rendering-tests`（"streaming replacement must
+reconfigure only its glyph"）。
+
+两个独立根因：worker 线程重建字形缓存时与 GUI 线程的字体数据库状态不一致；以及"替换文本时只重配字形、
+丢弃缓存像素"这条路径在 Linux 字体回退链下没被走到。
+
+#### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
+
+`snow-shot-system-tray-controller-tests`、`snow-shot-recording-export-tray-tests`（日志里有
+`QObject::connect: No such signal QPlatformNativeInterface::systemTrayWindowChanged(QScreen*)`）、
+`snow-shot-direct-capture-native-tests`（"direct capture lost the full desktop snapshot"）、
+`snow-shot-scrolling-capture-settings-tests`、`snow-shot-recording-capture-exclusion-tests`、
+`adqt-widget-diagnostics-tests`（菜单 model 装载后 `publishedRows=-1`）。
+
+判据同 §9.6 里的 offscreen 一条：**能力不存在就 `exit(77)` 交给 ctest 判 Skipped**，不要让"环境没有"表现为"产品坏了"。
+
+#### 9.7.6 外部依赖 / 子进程 / 网络（其余）
+
+`mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
+`api-client`（"local API test server timed out waiting for a request"）、
+`ocr-cpu-recognition-service`、`ocr-managed-runtime`（模型未 staged）、
+`cloud-upload`、`cloud-upload-settings`、`text-translation`、`configuration-archive`、
+`collage-pdf-export`、`image-split-editor`、`image-split-canvas`、`overlay-frame-presenter`、
+`magnifier-render`、`magnifier-interaction`、`pinned-recognition-save`、`pinned-quick-save`、
+`about-page`、`settings-color-commit`、`shortcut-key-row`、`screen-recording-shortcut`、
+`recording-history-shortcut`、`recording-audio-controller`、`recording-audio-gain-popover`、
+`recording-hidden-tool-shortcut`、`print-export-snapshot`、`region-shadow-renderer`、
+`selection-background-preview`、`layout-compaction`、`export-artifact`。
+
+这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是**同一根因打多个套件**，修一条消一片；
+这一组反过来，修一条只消一条。
+
+工具侧同时补了两条：`gh-ci.py` 的 `read_body()` 重试 + Range 分段（§9.6.65），
+以及 GUI 测试的 `-o file,txt`（§9.6.64）。没有这两条，上面这张表根本读不出来。
