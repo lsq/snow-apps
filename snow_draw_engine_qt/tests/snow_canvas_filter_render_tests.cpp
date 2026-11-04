@@ -3840,8 +3840,33 @@ class PainterStateBackdropRenderer final : public SnowCanvasCustomRenderer {
 
     void renderBeforeCanvas(QPainter& painter, const SnowCanvasRenderContext& context) override {
         ++calls;
-        preservedState = preservedState && painter.font() == expectedFont &&
-                         painter.renderHints() == expectedHints;
+        const QFont& actual = painter.font();
+        // Qt 5 resolves the font against the paint device inside setFont() and drops the
+        // resolve mask, so operator== reports a difference for a font whose every visible
+        // attribute - and whose QFont::key(), the representation Qt itself compares fonts
+        // by - round-trips unchanged. "Preserved the incoming font" means the key.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const bool sameFont = actual == expectedFont;
+#else
+        const bool sameFont = actual.key() == expectedFont.key();
+#endif
+        if (preservedState && (!sameFont || painter.renderHints() != expectedHints)) {
+            // Something rewrote the painter the caller handed over. The three candidates
+            // are the font object (Qt5 compares it including its resolve mask), the render
+            // hints, and the text-antialiasing hint the serial renderer is documented to
+            // disable - print all of them so one run identifies which one moved.
+            std::cerr << "backdrop painter state: font=" << actual.toString().toStdString()
+                      << " expected=" << expectedFont.toString().toStdString()
+                      << " italic=" << actual.italic() << '/' << expectedFont.italic()
+                      << " pointSizeF=" << actual.pointSizeF() << '/' << expectedFont.pointSizeF()
+                      << " pixelSize=" << actual.pixelSize() << '/' << expectedFont.pixelSize()
+                      << " key=" << actual.key().toStdString() << '/'
+                      << expectedFont.key().toStdString()
+                      << " hints=" << static_cast<int>(painter.renderHints()) << '/'
+                      << static_cast<int>(expectedHints) << " textAntialias="
+                      << int(painter.testRenderHint(QPainter::TextAntialiasing)) << '\n';
+        }
+        preservedState = preservedState && sameFont && painter.renderHints() == expectedHints;
         painter.fillRect(context.viewportRect, Qt::white);
     }
 
