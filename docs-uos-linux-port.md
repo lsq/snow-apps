@@ -7554,6 +7554,9 @@ req = urllib.request.Request(target, headers={"Range": f"bytes={len(collected)}-
 
 代价是每段一次 302，慢（约 3 分钟）；但"看不到日志"会让整轮 CI 白跑，这笔账划算。
 
+分段拉取做成了独立脚本 `.workbuddy/uos-port/fetch-job-log.py`（用法：`python fetch-job-log.py <job-id> <out>`），
+job id 从 `gh-ci.py jobs <run-id>` 的 `== [<id>] <name>:` 行取。
+
 ### 9.7 Linux CI 单元测试残留清单（2026-11-04，56/829）
 
 `962cb5ab` 上 Linux x64 Release 的 `ctest`：**93% passed, 56 failed out of 829**（573 s）。构建、deb、AppImage、
