@@ -8847,6 +8847,18 @@ following = re.search(r&quot;&lt;h2[ &gt;]&quot;, html_text[match.end():])
 撤掉标记再跑，标记消失。只跑第一次（注入）看不出重复，因为重复是<strong>累积</strong>出来的。</p>
 <p>顺带一条通用教训：<strong>「脚本说同步了」不等于「读者看到的是对的」</strong>。这类副本的判据不能只看
 脚本的日志，要落到"同一标题在产物里出现几次"这种可数的量上。</p>
+<p>同一轮还发现<strong>反向的一笔</strong>：附录 B、B.1、附录 C 从头到尾就没进过 HTML。
+脚本的 <code>SECTIONS</code> 只列了 <code>9.6.x</code> 与 <code>9.7</code>，没人把这三章加进去，于是渲染出来的页面在附录 A
+之后直接 <code>&lt;/main&gt;</code>——整章实测基线（run 41264674368 / 41383823090 的 arm64 失败分类）和
+Qt 5 崩溃栈那一章，读 HTML 的人一次都看不到，而 <code>md</code> 才是源。补法是 <code>APPENDED_SECTIONS</code>：
+按 <code>(标题, 结束标题)</code> 成对列出，首次追加到 <code>&lt;/main&gt;</code> 前，之后原地替换。</p>
+<p>附录 C 的结束标题写作 <code>9.6.50 …</code> 而不是下一个 <code>##</code>，因为紧跟其后的 <code>9.6.50</code>–<code>9.6.66</code>
+是由 <code>SECTIONS</code> 单独拼接的，整章渲染会让它们出现两份。</p>
+<p>现在的判据是<strong>章节数对齐</strong>，不是"脚本说同步了"：</p>
+<pre><code>md h2: 16    html h2: 17（多出来的是手写的&quot;目录&quot;）
+MD-ONLY / HTML-ONLY 均为空
+</code></pre>
+<p><code>&lt;div&gt;</code>/<code>&lt;main&gt;</code>/<code>&lt;table&gt;</code>/<code>&lt;pre&gt;</code> 的开闭计数相等，<code>41264674368</code> 出现两次（与 md 相同）。</p>
 <h3>9.7 Linux CI 单元测试残留清单（2026-11-04，56/829）</h3>
 <p><code>962cb5ab</code> 上 Linux x64 Release 的 <code>ctest</code>：<strong>93% passed, 56 failed out of 829</strong>（573 s）。构建、deb、AppImage、
 元数据校验全绿，红的全在单元测试这一步。</p>
@@ -9744,6 +9756,1086 @@ nm -D squashfs-root/usr/lib/libQt6Core.so.6 | grep isoc23 || echo &quot;OK: no _
 </code></pre>
 <hr>
 <p><em>本文档基于对 <code>snow-apps</code> 仓库（<code>SNOW_SHOT_VERSION 1.2.8</code>）的静态分析编写，所有文件路径与行号均对应当前快照。</em></p>
+<h2>附录 B：arm64 单元测试失败基线（run 41264674368，31c214fe）</h2>
+<p>x64 作业在 180 分钟上限处被取消，arm64 作业跑完全部 832 个用例：<strong>699 通过 / 133 失败</strong>，
+整个 Unit tests 步骤（重新配置 + 编译 289 个测试 TU + ctest）在 arm64 上装得进 180 分钟。
+也就是说 Linux 上「编译 + 打包 + 跑测试」全链路已经打通，
+剩下的全是断言差异，而且几乎没有成簇的单一根因——133 个失败落在 108 个互不相同的首行断言上。</p>
+<table>
+<thead>
+<tr>
+<th>失败数</th>
+<th>首条非噪声输出</th>
+<th>代表用例</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>11</td>
+<td><code>(无输出)</code></td>
+<td>adqt-context-menu-lifecycle-tests, adqt-value-widget-lifetime-tests, snow-shot-custom-ai-models-tests …</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>OCR cached/direct mismatch: mode=0 dpr=1.5 pixels=12 max_channel_difference=67 first=88,69 cached=#f</code></td>
+<td>snow-shot-screenshot-canvas-renderer-tests, snow-shot-ocr-canvas-renderer-tests, snow-shot-ocr-line-box-rendering-tests</td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>Traceback (most recent call last):</code></td>
+<td>snow-shot-mcp-capabilities-tests, snow-shot-mcp-fixture-tests, snow-shot-mcp-application-fixture-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>font database changes must invalidate worker layouts on their thread</code></td>
+<td>snow-canvas-text-draft-tests, snow-canvas-text-render-cache-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>offscreen serial scenes must preserve the incoming font and disabled text antialiasing for custom ba</code></td>
+<td>snow-canvas-filter-render-tests, snow-canvas-serial-number-font-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>hovering More opens the shared widget menu</code></td>
+<td>snow-shot-pinned-window-management-page-tests, snow-shot-collage-pinned-selection-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>managed decoding must preserve the reader's fallback scaling result</code></td>
+<td>snow-shot-main-window-skin-codec-tests, snow-shot-managed-image-reader-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>initial selector refresh failed</code></td>
+<td>snow-shot-window-element-api-tests, snow-shot-selector-phased-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>pinned text bounds match the exact client extent at the current DPR and zoom</code></td>
+<td>snow-shot-pinned-text-wrap-tests, snow-shot-pinned-text-wrap-fractional-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>quick save must create the configured directory and use format/name settings</code></td>
+<td>snow-shot-export-artifact-tests, snow-shot-quick-save-export-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>Move options must group region actions at the far left, before capture actions and hide</code></td>
+<td>snow-shot-move-region-toolbar-tests, snow-shot-screenshot-tool-palette-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>the screenshot move tool must retain Edit selection and its screenshot shortcut</code></td>
+<td>snow-shot-screenshot-action-shortcut-display-tests, snow-shot-screenshot-toolbar-i18n-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>screenshot settings body fits its content without vertical blank space</code></td>
+<td>snow-shot-translation-page-tests, snow-shot-screenshot-translation-settings-dialog-tests</td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>an OCR stitching source accounts for its raster before joining the import queue</code></td>
+<td>snow-shot-pinned-stitching-snapshot-tests, snow-shot-pinned-multi-selection-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Menu must publish populated rows before returning from setModel</code></td>
+<td>adqt-widget-diagnostics-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>unpadded text and link buttons must fit their content</code></td>
+<td>adqt-button-lifetime-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>********* Start testing of ButtonSignalLifetimeTests *********</code></td>
+<td>adqt-button-signal-lifetime-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>********* Start testing of SelectTest *********</code></td>
+<td>adqt-select-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>simulated primary display must use 150 percent scaling</code></td>
+<td>adqt-popup-hover-geometry-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the bundled Ant Design catalog should translate pagination text</code></td>
+<td>adqt-locale-manager-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>tablet samples preserve subpixel positions, time and normalized actual pressure</code></td>
+<td>snow-canvas-tablet-input-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>gradient opacity must increase from 16% to 42% and multiply every alpha</code></td>
+<td>snow-canvas-magnifier-render-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>sibling filters cannot consume or propagate each other's changed output</code></td>
+<td>snow-canvas-magnifier-interaction-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>bounded color conversion must exactly match Qt</code></td>
+<td>snow-canvas-image-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>serial rendering restores the caller's font state</code></td>
+<td>snow-canvas-serial-number-render-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>sparse dpr=1.25 rotation=-0.47 zoom=1.37 selected=1</code></td>
+<td>snow-canvas-text-overlay-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>long image tiles must remain on one page and preserve current image order</code></td>
+<td>snow-shot-collage-pdf-export-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>captured pixels own their admission without copying or losing image metadata</code></td>
+<td>snow-shot-collage-document-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Storage initialization: 2 ms</code></td>
+<td>snow-shot-collage-window-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Storage initialization: 1 ms</code></td>
+<td>snow-shot-collage-live-pinned-import-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>an empty-state drop must request import and clear the highlight</code></td>
+<td>snow-shot-image-split-editor-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Image split filename policy tests passed</code></td>
+<td>snow-shot-image-split-export-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>guarded image must retain the protected source storage</code></td>
+<td>snow-shot-image-split-preview-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>incremental overlays must match fresh renders across DPI, languages, and clipped rulers</code></td>
+<td>snow-shot-image-split-canvas-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>FFF</code></td>
+<td>snow-shot-recording-build-profiles-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>libpng error: PNG output write failed.</code></td>
+<td>snow-shot-image-codec-backend-smoke-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>parallel requests start</code></td>
+<td>snow-shot-text-translation-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>a silent Retina warp must deliver fractional hover movement to the child</code></td>
+<td>snow-shot-physical-cursor-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>an existing link error retranslates and preserves its destination</code></td>
+<td>snow-shot-about-page-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>administrator controls must exist in the settings catalog</code></td>
+<td>snow-shot-settings-catalog-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Checking interface.theme-primary-color</code></td>
+<td>snow-shot-settings-color-commit-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>System default is visibly selected when the application font is unset</code></td>
+<td>snow-shot-settings-select-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>related buttons size to their text without built-in padding</code></td>
+<td>snow-shot-settings-navigation-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>only settings that actually differ must announce changes</code></td>
+<td>snow-shot-configuration-archive-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>selector service geometry refresh failed</code></td>
+<td>snow-shot-selector-lifecycle-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>a disabled tray must not replace the last balloon with an update notice</code></td>
+<td>snow-shot-system-tray-controller-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>disabled legacy tray notifications cannot open files</code></td>
+<td>snow-shot-recording-export-tray-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>a new recording session must save the new physical position</code></td>
+<td>snow-shot-shortcut-key-row-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>direct capture lost the full desktop snapshot</code></td>
+<td>snow-shot-direct-capture-native-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>cursor patch must map through image pixels into desktop canvas points</code></td>
+<td>snow-shot-screenshot-cursor-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>crop guide must cross the selection center at one physical pixel</code></td>
+<td>snow-shot-scrolling-overlay-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>blit-format mean_ms argb32=1.12802 rgb32=0.0925955</code></td>
+<td>snow-shot-overlay-frame-presenter-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>each independent file window must retain its centered geometry</code></td>
+<td>snow-shot-file-pin-presentation-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>stationary controls must apply opacity immediately</code></td>
+<td>snow-shot-pinned-click-through-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>restored always-on-top fixture needs the pinned menu</code></td>
+<td>snow-shot-pinned-always-on-top-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>thumbnail transitions must preserve the current mouse anchor</code></td>
+<td>snow-shot-pinned-double-click-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Text wheel input should increase pinned font size</code></td>
+<td>snow-shot-pinned-toolbar-parity-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>close merged translation pin</code></td>
+<td>snow-shot-pinned-translation-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>an advertised Save As format could not be encoded</code></td>
+<td>snow-shot-screenshot-image-file-service-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the first presentation should consume the prepared shell</code></td>
+<td>snow-shot-pinned-window-pool-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>persisted recognition must keep the Qt 6.11 binary format</code></td>
+<td>snow-shot-pinned-restored-ocr-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>recognition setup must restore the overlay without changing or re-requesting OCR</code></td>
+<td>snow-shot-pinned-early-ocr-snapshot-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>existing pinned toolbar must reload its custom layout</code></td>
+<td>snow-shot-pinned-toolbar-layout-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the flip or half-turn must persist without changing the window size</code></td>
+<td>snow-shot-pinned-transformed-ocr-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>enabling window buttons must immediately reveal both on a hovered pin</code></td>
+<td>snow-shot-pinned-pointer-presence-offscreen-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>final encoding dimensions differ from form</code></td>
+<td>snow-shot-export-dialog-workflow-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>bounded codec preview encoding failed</code></td>
+<td>snow-shot-export-dialog-pipeline-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the save dialog must remain above its toolbar after a queued raise</code></td>
+<td>snow-shot-export-dialog-placement-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>upload succeeds once</code></td>
+<td>snow-shot-cloud-upload-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>changing cloud destination synchronizes selection without recreating rows</code></td>
+<td>snow-shot-cloud-upload-settings-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>invalid Excel workbook package</code></td>
+<td>snow-shot-pinned-recognition-save-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>failed file copy leaves clipboard untouched</code></td>
+<td>snow-shot-pinned-shared-image-export-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>automatic save failure preserves the successful pin</code></td>
+<td>snow-shot-pin-execution-autosave-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>quick-save annotation was not committed</code></td>
+<td>snow-shot-pinned-quick-save-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>legacy default saves must upgrade to an idempotent quick-save stack</code></td>
+<td>snow-shot-quick-save-toolbar-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Arrow should remain a direct button when Line is unavailable</code></td>
+<td>snow-shot-screenshot-tool-palette-distance-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>Table and QR recognition should occupy one main toolbar slot</code></td>
+<td>snow-shot-screenshot-action-toolbar-layout-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>default drawing group should expose all configured tools</code></td>
+<td>snow-shot-screenshot-shortcut-tooltip-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>storage compatibility coverage should follow the engine's current template version</code></td>
+<td>snow-shot-styled-template-storage-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>closing a ratio popup must restore the previous screenshot keyboard owner</code></td>
+<td>snow-shot-screenshot-selection-toolbar-hover-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>save test template</code></td>
+<td>snow-shot-global-canvas-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>clicking active Select must return to Export Settings</code></td>
+<td>snow-shot-screen-recording-shortcut-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>repeating a recording tool shortcut must return to Export Settings like a button click</code></td>
+<td>snow-shot-recording-history-shortcut-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>initial capture must exclude the interface</code></td>
+<td>snow-shot-scrolling-capture-settings-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>toolbar movement must forward the event's global coordinates</code></td>
+<td>snow-shot-toolbar-guide-hover-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the screenshot window should live-reload every independent action slot</code></td>
+<td>snow-shot-floating-toolbar-action-layout-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>screenshot reset should be enabled without selection</code></td>
+<td>snow-shot-screenshot-selection-reset-command-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>unavailable native exclusion keeps drawing popup hidden; capture-on shows it</code></td>
+<td>snow-shot-recording-capture-exclusion-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>OCR integration must execute the selected runtime</code></td>
+<td>snow-shot-ocr-cpu-recognition-service-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the managed OCR runtime must be staged</code></td>
+<td>snow-shot-ocr-managed-runtime-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>save failed: avif: output_failed</code></td>
+<td>snow-shot-mcp-document-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>local API test server timed out waiting for a request</code></td>
+<td>snow-shot-api-client-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>all resize handles must preserve aspect ratio</code></td>
+<td>snow-shot-pinned-controlled-interaction-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>passive publication correction must restore geometry without discarding pixels</code></td>
+<td>snow-shot-pinned-passive-publication-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>live pin pixels, alpha and source mapping must match sRGB conversion</code></td>
+<td>snow-shot-pinned-color-space-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>pinned drawing editor must serialize and save the selected canvas elements</code></td>
+<td>snow-shot-pinned-template-dialog-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>failed export must not start native drag</code></td>
+<td>snow-shot-pinned-drag-export-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>rapid source switching rejects a stale preview before retirement completes</code></td>
+<td>snow-shot-recording-audio-controller-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>dragging out of a hover-opened editor preserves gain editing</code></td>
+<td>snow-shot-recording-audio-gain-popover-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>a narrow desktop needs overflow without allocating its menu</code></td>
+<td>snow-shot-floating-toolbar-menu-lifecycle-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>the mixed-DPI fixture screen is missing</code></td>
+<td>snow-shot-original-image-preview-mixed-dpi-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>hidden recording hotkeys retain their Export Settings toggle</code></td>
+<td>snow-shot-recording-hidden-tool-shortcut-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>........FF....</code></td>
+<td>snow-shot-release-optimization-policy-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>empty document fast path changed projection, alpha, or color metadata</code></td>
+<td>snow-shot-print-export-snapshot-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>published backing store clears stale shadow pixels on every toggle</code></td>
+<td>snow-shot-pinned-show-shadow-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>dense tiled union and hole dpr=1.000000 transform=1: maximum premultiplied channel difference=34 fir</code></td>
+<td>snow-shot-region-shadow-renderer-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>tile mismatch dpr=1.3 at 642,408 actual=#8594a7 expected=#8292a6</code></td>
+<td>snow-shot-selection-background-preview-tests</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>batched pixels must retain source samples and exact coverage</code></td>
+<td>snow-shot-layout-compaction-tests</td>
+</tr>
+</tbody>
+</table>
+<p>按性质归类的处理方向：</p>
+<ol>
+<li><strong>平台门控（最高性价比）</strong>：<code>administrator controls must exist in the settings catalog</code> 一类断言在
+   Linux 上没有对应页面，属于用例缺 <code>Q_OS_WIN</code> 条件，不是产品缺陷。</li>
+<li><strong>字度量</strong>：<code>unpadded text and link buttons must fit their content</code>、<code>pinned text bounds</code>、
+   <code>Move options must group…</code> 都建立在具体字体度量上，Qt 5.15.13 arm64 的 fallback 字体与 Qt6 不同，
+   需要在测试里固定测试字体，而不是照抄 Qt6 的像素期望。</li>
+<li><strong>色彩/像素管线</strong>：<code>OCR cached/direct mismatch</code>、<code>bounded color conversion must exactly match Qt</code>、
+   <code>tile mismatch dpr=1.3</code>、<code>maximum premultiplied channel difference=34</code> 是 Qt5 色彩转换与dithering
+   的实现差异，需要按「两条产品路径互相一致」而不是「与 Qt6 像素相等」来断言。</li>
+<li><strong>屏幕夹具</strong>：<code>the mixed-DPI fixture screen is missing</code>、<code>simulated primary display must use 150 percent scaling</code>
+   依赖 QPA 提供的多屏/DPR 能力，offscreen 插件给不出，需要在 Linux 上换夹具实现。</li>
+<li><strong>崩溃（13 个 SEGFAULT + 1 个 SIGBUS）</strong>：故障地址集中在 Qt 5 内部同一条 abort 路径上，见 <code>.workbuddy/qt5-port/dump-on-crash.ps1</code>
+   与本机复现记录；<code>adqt-button-signal-lifetime-tests</code> 在 arm64 上是 SIGBUS（signal 7）而非 AV，需单独看。</li>
+</ol>
+<p>复跑方法（任一 Linux 机器）：</p>
+<pre><code class="language-bash">cmake --preset snow-shot-linux-x64-release -DSNOW_APPS_BUILD_TESTS=ON
+cmake --build --preset snow-shot-linux-x64-release --parallel 4 -- -k 0
+xvfb-run -a --server-args=&quot;-screen 0 1280x1024x24&quot; \
+  ctest --test-dir build/snow-shot-linux-x64-release --output-on-failure
+</code></pre>
+
+<h2>附录 B.1：run 41383823090 基线——用双架构交集把失败切成两堆</h2>
+<p>上一次基线（附录 B，133 失败）里 x64 作业被 180 分钟上限取消，只能看 arm64 一家。
+这次两个架构都跑完了，于是第一次能做<strong>集合运算</strong>，而不是逐个读断言：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>失败数</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>x64（这次跑完了，03:34 开工、06:42 出结果；上一次在 180 分钟上限被取消）</td>
+<td>109 / 832</td>
+</tr>
+<tr>
+<td>arm64（03:34 → 05:41）</td>
+<td>113 / 832</td>
+</tr>
+<tr>
+<td><strong>交集</strong>（两边都红）</td>
+<td><strong>109</strong></td>
+</tr>
+<tr>
+<td>只在 arm64 红</td>
+<td>4（<code>canvas-text-overlay</code>、<code>image-split-export</code>、<code>screenshot-cursor</code>、<code>scrolling-overlay</code>）</td>
+</tr>
+<tr>
+<td>只在 x64 红</td>
+<td>0</td>
+</tr>
+</tbody>
+</table>
+<p><strong>统计口径的坑</strong>：不能 grep 行内的 <code>***Failed</code> 来数——x64 那样只数到 96 条，少 12 条，
+而 ctest 汇总的 <code>The following tests FAILED</code> 段是 109 条。下载日志用 <code>--tail</code> 截断开头时，
+前段测试的 <code>***Failed</code> 行会一起丢掉，所以<strong>唯一可信的口径是末尾那段汇总清单</strong>
+（<code>grep -A140 "The following tests FAILED"</code> 再取 <code>^\s+[0-9]+ - name</code>）。</p>
+<p>这个切法是这次最有用的结论：<strong>109 条与架构无关</strong>，它们只说明"Linux 上的行为和 Windows 不一样"，
+所以任何"再去 x64 上试一次"的排查都是浪费；剩下 4 条才是 aarch64 相关，而且四条的断言形态
+是同一类——<strong>差一个最低位 / 一个物理像素</strong>：</p>
+<pre><code>pixel (4, 0) is #8aaa022b, expected #8aaa022a      ← 蓝色通道差 1
+crop guide must cross the selection center at one physical pixel
+cursor patch must map through image pixels into desktop canvas points
+sparse dpr=1.25 rotation=-0.47 zoom=1.37 selected=1 / sparse repaints must preserve pixels outside the exposed region
+</code></pre>
+<p>这是 NEON 与 SSE 在 <code>round</code>/<code>toInt</code> 上的取整方向差异，不是产品逻辑错。要在 aarch64 上绿，
+得让断言按"两条产品路径互相一致"或"允许 ±1"来写，而不是钉死某个值——和附录 B 第 3 类同一个处置。</p>
+<h3>这轮在 CI 上变绿的条目，以及一条"修了还红"的</h3>
+<table>
+<thead>
+<tr>
+<th>ctest 条目</th>
+<th>上一次</th>
+<th>这一次</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>snow-shot-global-canvas-tests</code>（#579）</td>
+<td><code>***Failed</code>（<code>save test template</code>）</td>
+<td><strong>Passed</strong></td>
+</tr>
+<tr>
+<td><code>snow-shot-global-canvas-color-sampling-tests</code>（#581）</td>
+<td><code>***SegmentFault</code></td>
+<td><strong>Passed</strong></td>
+</tr>
+<tr>
+<td><code>snow-shot-pinned-template-dialog-tests</code>（#748）</td>
+<td><code>***Failed</code></td>
+<td><strong>Passed</strong></td>
+</tr>
+<tr>
+<td><code>snow-shot-styled-template-storage-tests</code>（#560）</td>
+<td><code>***Failed</code></td>
+<td>仍红 → 本次已修（见下）</td>
+</tr>
+</tbody>
+</table>
+<p><code>#560</code> 修完仍红的原因值得记一笔：它红在<strong>测试自身的漂移守卫</strong>上——</p>
+<pre><code>storage compatibility coverage should follow the engine's current template version
+</code></pre>
+<p>这条断言把"引擎写出的版本号"钉成 <code>6</code>，同时接受 <code>1..6</code>、把 <code>7</code> 列为"未来格式"。
+c4c8108c 把 C++ 上限提到 7 之后，这三处字面量就全错了。<strong>光改 schema 侧会永远红，
+光改第一条断言又会让它接受一个校验器其实拒绝的版本</strong>，所以三处必须从同一个常量派生
+（<code>engineTemplateVersion</code>，对应 Rust 的 <code>DRAW_TEMPLATE_SCHEMA_VERSION</code>）。
+反向验证：常量退回 6 时恰好红在这一条，改回 7 后
+<code>--styled-template-storage-only -platform offscreen</code> 绿。</p>
+<h3>失败总数 133 → 113</h3>
+<p>比上一轮少 20 条。分族看（同一口径，ctest 汇总清单）：</p>
+<table>
+<thead>
+<tr>
+<th>族</th>
+<th>附录 B（run 41264674368）</th>
+<th>本次（run 41383823090）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adqt-*</code></td>
+<td>11</td>
+<td><strong>5</strong>（button-lifetime、button-signal-lifetime、popup-hover-geometry、select、widget-diagnostics）</td>
+</tr>
+<tr>
+<td><code>snow-shot-mcp-*</code></td>
+<td>3</td>
+<td><strong>4</strong>（多了 <code>mcp-application-tests</code>）</td>
+</tr>
+<tr>
+<td><code>snow-canvas-*</code></td>
+<td>10</td>
+<td>10（同 10 条，一条不多一条不少）</td>
+</tr>
+</tbody>
+</table>
+<p>所以不是"上一轮的失败都是连带现象"。<code>adqt-*</code> 少了 6 条、<code>mcp-*</code> 还多了 1 条，说明这批
+（附录 B 里首行是 <code>(无输出)</code> 或 <code>Traceback</code> 的那些）<strong>状态不稳定，会随运行而变</strong>：
+它们失败时连断言都不打印，更像是进程级问题（崩溃、超时、Python 夹具没起来）而不是产品断言。
+处置这类用例的正确顺序是先让它稳定复现，而不是去猜断言；逐条"修" 133 条里每一条的性价比，
+远低于先把交集 109 条按附录 B 的 5 类批量处置。</p>
+
+<h2>附录 C：Qt 5 崩溃栈的符号化与三条已确认的框架差异</h2>
+<p>Linux 上 13 个 <code>***Exception: SegFault</code> 之前一直是黑箱：Qt 5 开源版不带 PDB，
+<code>Qt5Widgetsd.dll+0x52F9A</code> 只能被解析到最近的导出符号，于是十几条完全不同的栈都被印成
+<code>QStyleAnimation::frameRate+0x…</code>。这个假名字让排查卡了两轮。</p>
+<p><strong>装一次 PDB 就解决了。</strong> Qt 官方把 debug info 单独发布在
+<code>download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt5_5152/</code> 下，
+<code>qt.qt5.5152.debug_info.win64_msvc2019_64/…qtbase…-debug-symbols.7z</code> 是 90 MB，
+解压到 <code>.tools/qt5-symbols/extracted/5.15.2/msvc2019_64/bin</code> 后把该目录挂到
+<code>_NT_SYMBOL_PATH</code>（必须在 <code>SymInitialize</code> 之前），
+<code>.workbuddy/qt5-port/stack-any-dump.py</code> 就会自动使用它。同一个 dump 的同一段栈，
+符号化前后相差一个数量级的信息量。</p>
+<h3>C.1 <code>QAbstractButton</code> 在 emit 之后还会写自己的私有状态</h3>
+<p>Qt 5 的 <code>QAbstractButtonPrivate::click()</code> 在发完 pressed/released/toggled/clicked <strong>之后</strong>
+还会调 <code>refresh()</code>；<code>QAbstractButton::mouseReleaseEvent()</code> 在 <code>click()</code> 返回后还会写
+<code>d-&gt;repeat</code>。因此「观察者在按钮的信号里 <code>delete</code> 按钮」在 Qt 5 上必然访问已释放的
+<code>QAbstractButtonPrivate</code>。Qt 6 删掉了这两条语句，所以只有 Qt 5 的跑到这里崩。</p>
+<p><code>adqt-value-widget-lifetime-tests</code> 的两个鼠标/键盘用例因此按 <code>QT_VERSION &gt;= 6</code> 门控。
+同一文件里 <code>AdTagGroup::applySelectionToTags()</code> 仍然可以在 Qt 5 上安全地允许观察者删除整组：
+把状态改动放进 <code>QSignalBlocker</code>，再用 <code>QMetaObject::invokeMethod</code> 补发 <code>toggled</code>，
+此时按钮已经没有任何后续工作，删除就是安全的。</p>
+<h3>C.2 <code>QMenu</code> 的 sloppy state 无法吸收「先重开、后销毁旧 shell」</h3>
+<p><code>AdContextMenu</code> 的懒加载子菜单在每次重开时换一个新 shell。若旧 shell 的 <code>deleteLater()</code>
+等到<strong>下一轮 popup 之后</strong>才执行，Qt 5 会在 <code>setActiveAction()</code> 里沿着 sloppy state 把那个已销毁
+的菜单再 <code>QMenu::popup()</code> 一次：</p>
+<pre><code>setActiveAction -&gt; setCurrentAction -&gt; popupAction -&gt; internalDelayedPopup
+  -&gt; QMenuSloppyState::setSubMenuPopup -&gt; QMenu::popup -&gt; QMenuPrivate::get -&gt; d_func   [fault]
+</code></pre>
+<p>把销毁放在每轮末尾（<code>persistentParentsRestoreLazySubmenus(true)</code>）就正常，所以这是顺序问题。
+产品侧试过两种修法都不改变故障地址：在 <code>LazySubMenu::installShell()</code> 里同步删掉旧 shell、
+以及销毁前先 <code>setParent(nullptr)</code> —— 失效的引用在 Qt 的 sloppy state 里，不在控件自己手上。
+该顺序用例按 <code>QT_VERSION &gt;= 6</code> 门控，并在 stderr 上明说。</p>
+<h3>C.3 静态库里的 Qt 资源必须有人引用才存在</h3>
+<p><code>rcc</code> 生成的翻译单元只有 <code>qInitResources_&lt;target&gt;_translations</code> 及其清理函数，
+注册动作依赖文件内的静态初始化器；而静态库成员只有在有符号被引用时才会被链接器拉进来。
+<code>libant_design_qt.a</code> 里没有任何东西引用它，于是整个 <code>.qm</code> 资源被丢弃，
+<code>catalogPathFor()</code> 列出一个空目录，<code>refreshTranslator()</code> 静默不装任何 translator，
+界面全量退回英文且不报错。修法是从 <code>catalogPathFor()</code> 里显式点名该入口。</p>
+<p>注意 <code>Q_INIT_RESOURCE</code> 必须写在<strong>全局命名空间</strong>的具名函数里：宏展开只是 <code>extern int qInitResources_x()</code>，
+这条声明会落进最内层封闭命名空间，在 <code>adqt::locale</code> 或匿名命名空间里都会解析到不存在的符号
+（MSVC 直接把修饰名打出来了）。</p>
+<h3>C.4 崩溃栈现在能给出「源文件:行号」</h3>
+<p><code>SymFromAddr</code> 在本机仍然静默失败，但 <strong><code>SymGetLineFromAddr64</code> 能用</strong>：Qt 官方 debug-symbols
+的 PDB 和我们自己的 PDB 都带行信息。<code>stack-any-dump.py</code> 已经接上，于是每条栈帧长这样：</p>
+<pre><code>  [0118] 0x00007FFFBD365496  QAction::activate+0x36  (qaction.cpp:1149)
+  [0198] 0x00007FF66841B1F1  pageActionsAndLifecycle+0x1DA1  (standalone_translation_tests.cpp:425)
+</code></pre>
+<p>代价是十几行 ctypes：<code>IMAGEHLP_LINE64</code> 的 <code>SizeOfStruct</code> 必须先填好，否则 dbghelp 同样
+「返回 FALSE 且 GetLastError 为 0」。有了行号，"崩在 QAction::trigger 里" 就直接落到
+<strong>测试的第 425 行</strong>，不必再猜是哪个调用点。</p>
+<h3>C.5 弹出菜单持有自己的动作：懒创建 + 隐藏即销毁</h3>
+<p><code>ActionPopupMenu</code> 的工厂每次 open 都造一个新菜单，菜单 <code>setDeleteOnHide()</code>，动作是菜单的
+子对象。于是：</p>
+<ul>
+<li>菜单没打开过 ⇒ <code>findChild&lt;QAction*&gt;("translationCopy")</code> 返回 <strong>nullptr</strong>；</li>
+<li>菜单一旦 hide（复制、点别处、模态关闭）⇒ 动作<strong>随之销毁</strong>，先前抓到的 <code>QAction*</code>
+  变成悬垂指针。</li>
+</ul>
+<p>Qt5 上这两种情况都是 <code>QAction::activate</code> 里 <code>QPointer&lt;QObject&gt;</code> → <code>getAndRef</code> 的 C0000005
+（<code>qaction.cpp:1149</code>）。<code>standalone_translation_tests</code> 两个用例都踩在这里，修法：先
+<code>click()</code> 浮动按钮把菜单打开、再取动作；复制之后菜单已销毁，取"复制并关闭"必须<strong>重新
+打开一次</strong>。<code>snow-shot-translation-page-streaming-tests</code> 更彻底——页面从未 show，菜单
+根本打不开，只能改用结果区常驻的复制按钮（同一个 <code>copyResult()</code>）。</p>
+<h3>C.6 <code>AdPopover::takeContentWidget()</code> 曾经"拿不走"</h3>
+<p>弹层视图（<code>PopoverContentView</code>）自己也存了一份 widget 指针，并且<strong>每次 rebuild 都会把它
+re-parent 回自己的 host</strong>。<code>takeContentWidget()</code> 只清了 popover 这边那份，<code>setParent(nullptr)</code>
+之后又立刻 <code>syncPopupContent()</code> ⇒ 视图把 widget 原样塞回弹层。调用方以为拿走了，其实还挂在
+弹层里（<code>AdPopconfirm</code> 只好再 <code>setParent(nullptr)</code> 一遍兜底）。</p>
+<p>调用方是析构函数时这会致命：<code>~AdPopconfirmPrivate</code> 取回面板随即 <code>delete</code>，而 Qt5 的
+<code>QWidget::setParent → QWidgetPrivate::reparentFocusWidgets</code> 在"半销毁"的 widget 上崩掉
+（<code>snow-shot-translation-settings-tests</code> 的 C0000005，地址 <code>Qt5Widgetsd+0x52F9A</code>）。
+修法是先让视图忘掉它（<code>popupContentView_-&gt;setContentWidget(nullptr)</code>），再摘走。</p>
+<h3>C.7 断言失败不能走静态析构（一条 SELinux 式的整类 SEGFAULT）</h3>
+<p>所有 <code>require()</code> 助手都是「<code>std::cerr &lt;&lt; message</code> 然后 <code>std::exit(EXIT_FAILURE)</code>」。<code>exit()</code>
+会<strong>在测试刚造出来的窗口还活着的时候</strong>跑静态析构：<code>adqt</code> 的几个单例（<code>TimingHub</code>、图标缓存
+的 <code>QMutex</code>）此时已经没了，于是一个控件收到 <code>QEvent::Hide</code> 走到 <code>cancelTimingTask()</code> /
+<code>renderIconPixmap()</code>，就在已销毁的互斥量上取址崩溃。</p>
+<p>后果不是"多一个崩溃"，而是<strong>判据不可见</strong>：CI 记录的是 SIGSEGV 而不是那条断言消息，
+十来个测试因此根本没法定位。改成 <code>std::_Exit(EXIT_FAILURE)</code>（跳过析构即可，<code>std::cerr</code>
+是 unit-buffered，消息不会丢）后，同一批用例立刻变成老老实实的失败退出码 + 首行断言。</p>
+<p>结论：<strong>测试的失败路径必须无副作用</strong>。否则"崩溃"这个信号会被大量误报淹没。</p>
+<h3>C.8 <code>QApplication::widgetAt()</code> 在 Wayland 与 Qt5 offscreen 上没有答案</h3>
+<p><code>pointerHoverPositionWithin()</code> 用 <code>widgetAt(全局点)</code> 做"是不是被别的窗口盖住了"的命中测试，
+拿不到就一律拒绝。但 Wayland 客户端<strong>根本无法查询全局指针</strong>，Qt5 的 offscreen 插件同样返回空，
+于是这两个平台上"悬停展开菜单"从来没生效过（<code>translation_page_tests</code> 的
+<code>trigger reveals actions</code> 就是这么红了一整天）。</p>
+<p>修法：只有平台<strong>确实指出</strong>了一个不属于接收者的控件时才拒绝；没有答案时，事件本身携带的
+位置就是唯一证据，而它已经通过了矩形与可见子树检查。这条同时修好了 UOS/Wayland 上的产品行为，
+不只是测试。</p>
+<h3>C.9 主题信号打到一个"没有画布"的窗口上（<code>nullptr-&gt;update()</code>）</h3>
+<p><code>snow-shot-pinned-hide-to-top-tests</code> 的崩溃花了一轮才定性：RIP 落在
+<code>QWidget::rect()</code>（<code>qwidget.h:860</code>），访问地址是 <strong>0x28</strong>——也就是从空指针上读成员。
+栈上明明是 <code>m_canvas-&gt;update()</code> 的那一行，但真正为空的不是 <code>this</code>：</p>
+<p><code>destroyCanvas()</code> 会把 <code>m_canvas</code> 置空（内容重新物化前一直是空），而钉图窗口仍然挂在
+<code>themeChanged</code> 上，主题一变就被要求重绘，于是 <code>nullptr-&gt;update()</code> 在 <code>QWidget::update()</code>
+里读 <code>d-&gt;data-&gt;crect</code> 直接崩。<strong>空指针上调非虚成员函数是 UB，这条和 Qt5 无关，Qt6 一样会崩</strong>，
+只是要"主题在窗口没有画布的那一刻正好变了"才触发。</p>
+<p>两个教训：
+1. 报错行号（PDB 行信息）能指到 <code>update()</code> 这一句，但<strong>指不到"哪个指针是空的"</strong>。
+   <code>dump-on-crash.ps1</code> 现在会把 <code>ExceptionInformation[1]</code> 一起打出来——<code>0x28</code> 这种小地址
+   一看就知道是空成员访问，而不是野指针。
+2. 主题/字体这类全局信号的回调里，成员指针一律先判空。<code>m_destroying</code> 这种"正在销毁"标志
+   也要放在最前面返回，否则析构途中的重入会把半销毁的控件再画一遍。</p>
+<h3>C.10 offscreen 平台不会在隐藏时撤销激活</h3>
+<p><code>window.hide()</code> 之后 <code>isVisible()</code> 立刻为假，但 offscreen 插件<strong>不会</strong>像真实窗口管理器那样
+再发一次"取消激活"，所以 <code>isActiveWindow()</code> 仍是真。这类断言在 offscreen 上不是产品缺陷，
+而是平台根本没有这个答案（和 C.8 的 <code>widgetAt()</code> 同一类）。</p>
+<p>判据写法：可见性要求保留给所有平台，激活要求只留给真实平台（本仓库里就是
+<code>--hide-to-top-native-only -platform windows</code> 那个变体）。</p>
+<h3>C.11 已修：<code>snow-shot-global-canvas-color-sampling-tests</code> 在 offscreen 上爆栈</h3>
+<p>状态：<strong>已修</strong>（<code>0d52a58d</code>）。根因是 <code>applyPlacementScreen()</code> 缺重入闸，见下面「C.11 结论」。
+本节保留当时的判据、排除过程与工具，因为里面有一半假设是被<strong>证伪</strong>的，值得留档。</p>
+<p>修前的现象与判据：</p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-platform windows</code>（本机）</td>
+<td>通过，EXIT=0</td>
+</tr>
+<tr>
+<td><code>-platform offscreen</code>（本机）</td>
+<td><code>0xC00000FD</code> 栈溢出，退出码 127，崩前刷 661 次 <code>does not support raise()</code></td>
+</tr>
+<tr>
+<td>Linux arm64 CI（xcb + <code>-platform offscreen</code>）</td>
+<td><code>***Exception: SegFault</code>，日志里同样是 storage 初始化后紧跟一条 <code>does not support raise()</code></td>
+</tr>
+</tbody>
+</table>
+<p>也就是说：<strong>这不是 Windows-offscreen 的本地怪癖，CI 上同一个用例同样崩</strong>，只是 Linux 上
+表现为 SIGSEGV 而不是 <code>STATUS_STACK_OVERFLOW</code>。所以它必须修，不能按"只在本机复现"跳过。</p>
+<p>已排除的假设（都做过实测探针，探针已还原）：</p>
+<ol>
+<li><strong>不是 <code>QApplication::notify</code> 嵌套</strong>。把测试里的 <code>QApplication</code> 换成
+   <code>notify()</code> 带深度计数的子类，整轮下来深度最大只有 2。所以事件重入不是元凶。</li>
+<li><strong>不是控制器/浮动工具栏自我重入</strong>。在 <code>placeToolbar</code> / <code>updateGeometry</code> /
+   <code>resizeEvent</code> / <code>Session::event</code> / <code>prepareForDisplay</code> / <code>commitGeometryUpdate</code> /
+   <code>refreshGeometryForVisibleContent</code> / <code>handlePaletteContentChange</code> 上加共享深度计数器，
+   最大深度 3；再给 <code>moveContentTo</code> / <code>setPlacementContext</code> 加"深度&gt;6 就返回"的硬闸，
+   一次都没触发，崩溃照旧。</li>
+<li><strong>不是采样窗口自己重入</strong>。<code>ScreenshotCanvasColorSamplerWindow::updateSample</code> 与
+   <code>paintEvent</code> 的深度计数一次都没超过 1。</li>
+<li>栈指针采样（下面这套工具）显示栈是<strong>一路下降到接近栈底</strong>才撞上守卫页，也就是真·深递归，
+   不是单帧巨型 <code>alloca</code>。</li>
+</ol>
+<p>排查工具（都在 <code>.workbuddy/qt5-port/</code>，不入库）：<code>dump-on-crash.ps1</code> 现在能打出
+<code>EXCEPTION_RECORD.ExceptionInformation[0..1]</code>（读/写 + 目标地址），
+<code>stack-any-dump.py</code> 能按线程号和 fault rip 符号化栈。<strong>这些都不够用</strong>，因为栈溢出的那个
+dump 没有可用的展开信息（<code>MiniDumpWriteDump</code> 带异常流时会返回
+<code>0x80070006 ERROR_INVALID_HANDLE</code>，只能退化成不带异常流的 dump）。</p>
+<p>原本以为"最深栈点采样"是下一步：在测试里起一个线程，<code>SuspendThread</code> +
+<code>GetThreadContext</code> 采主线程，<strong>只在 RSP 创新低时</strong>把 <code>(rsp, rip)</code> 写进文件，进程崩掉之后
+再离线符号化。这条路走通了采样（~21 个下降点、深度约 500 KB）但符号化对不准，而且它只能
+给出 RIP，看不出一层的<strong>形状</strong>。<strong>已经证明不需要它</strong>：栈溢出的 dump 里线程栈内存是完整的，
+线性扫栈 + <code>stack-from-minidump.py</code> 就能把 700 层周期照出来，见下一节。</p>
+<p>复现命令（本机）：</p>
+<pre><code>cd build/windows-qt5-tests/snow_shot/test-bin
+PATH=&quot;/c/Qt/5.15.2/msvc2019_64/bin:$PATH&quot; \
+QT_PLUGIN_PATH=&quot;C:/Qt/5.15.2/msvc2019_64/plugins&quot; \
+QT_QPA_PLATFORM_PLUGIN_PATH=&quot;C:/Qt/5.15.2/msvc2019_64/plugins/platforms&quot; \
+./snow-shot-global-canvas-tests.exe --color-sampling-only -platform offscreen
+</code></pre>
+<h3>C.11 补充：先修掉的是另一个 bug（模板版本），爆栈仍在</h3>
+<p><code>--color-sampling-only</code> 之外，不带参数的 <code>snow-shot-global-canvas-tests</code> 在本机 offscreen 上
+也会挂；它挂的位置更靠后，而且<strong>在 <code>-platform windows</code> 上同样复现</strong>：</p>
+<pre><code>rc=1  save test template        # 断言失败，不是崩
+</code></pre>
+<p><code>save test template</code> 对应 <code>DrawTemplateSettings::setTemplates()</code> 返回 false。根因不是平台，
+是<strong>跨语言的版本常量漂移</strong>：Rust 侧
+<code>DRAW_TEMPLATE_SCHEMA_VERSION = 7</code>
+（<code>snow_draw_engine_qt/crates/snow-draw-engine-editor/src/draw_template.rs</code>），
+而 C++ 侧 <code>normalizeDrawTemplates()</code> 的上限还写着 6
+（<code>snow_shot/src/storage/configurationschema.cpp</code>）。于是引擎刚写出来的模板被 schema
+判成"不支持的未来格式"整条丢掉，<code>setTemplates</code> 只能返回 false。这条同时解释了 CI 里
+<code>560 snow-shot-styled-template-storage-tests</code> 的失败。</p>
+<p>修掉之后（<code>c4c8108c</code>）同一个套件不再停在这句断言上，而是继续往下跑到<strong>同一个栈溢出</strong>，
+说明爆栈和模板问题是两件事。修完的模板用例顺带提供了一个更好的复现面：不带参数的套件
+和 <code>--color-sampling-only</code> 都能在 40 秒内撞上它。</p>
+<p><strong>当时的一个错误推断</strong>：两次崩溃前 <code>does not support raise()</code> 的条数分别是 661（采样变体）
+和 716（完整套件），和"递归深度"同一量级，于是被读成"每一层递归都在 raise 一个顶层窗口"。
+修完之后这个条数是 692 / 722，<strong>没变</strong>——raise 是测试自己正常的显示/前置动作产生的，
+和递归深度只是碰巧同量级。教训：只凭"两个数字同量级"连不成因果，得让修完之后的数字
+再讲一遍同样的故事才算数。</p>
+<h3>C.11 结论：<code>WinIdChange → setScreen() → WinIdChange</code> 的自我递归</h3>
+<h4>怎么拿到的栈</h4>
+<p>不用"最深栈点采样"（上文的采样线程只给出 RSP/RIP，符号化对不准）。真正管用的是
+<strong>把 <code>dump-on-crash.ps1</code> 当调试器</strong>：它 <code>DebugActiveProcess</code> 之后收到的<strong>第一个</strong>异常就是
+真凶，后面的不是。</p>
+<pre><code>exception 0xC00000FD at 0x7FF6CD17BB77 first-chance=1 access=1 0xD78C803B10   ← 真凶
+exception 0xC0000005 at 0x7FFF6A1C9772 ... (×3)                              ← 死后的异常派发
+</code></pre>
+<p><code>0xC00000FD</code> 是 <code>STATUS_STACK_OVERFLOW</code>，<code>access=1</code>（写）+ 目标地址落在栈区间下沿，
+正是 <code>_chkstk</code> 写守卫页；<code>0x7FF6CD17BB77</code> 在 exe 映像内，符号化后是
+<code>WindowShortcutManager::eventFilter+0x27</code>（+39 字节，就是函数序言）。后面那三条
+<code>0xC0000005</code> 的 rip 落在 ntdll，是线程已经死掉之后系统还在派发异常——<strong>别拿它当崩溃点</strong>。
+上一轮的"最深栈点采样"其实也摸到了同一个 <code>eventFilter+0x27</code>，只是单点 RIP 说明不了
+"这个函数是被谁一层层调进来的"，于是它被误读成"环在 eventFilter 之上"，方向就偏了。</p>
+<p>转储里没有异常流（<code>MiniDumpWriteDump</code> 带异常信息仍返回 <code>0x80070006</code>），但
+<code>MINIDUMP_THREAD.Stack</code> 的<strong>内存是完整的</strong>，所以离线线性扫栈就够：</p>
+<pre><code>python .workbuddy/qt5-port/stack-from-minidump.py \
+  .workbuddy/qt5-port/dumps/gcs4/snow-shot-global-canvas-tests.dmp \
+  22228 snow-shot-global-canvas-tests.exe 120
+</code></pre>
+<p>三个必须踩过的坑（都已在脚本里修好）：</p>
+<ol>
+<li><strong>候选地址只认 <code>.text</code></strong>。按整张映像范围筛会把 <code>.data/.rdata</code> 里的 vtable、字符串指针
+   也算进来，它们翻不出符号就掉到"最近的下一个符号"，输出成 <code>+0xA41CF0</code> 这种一眼假的位移。</li>
+<li><strong>栈向下长</strong>：低地址 = 最内层帧。上一版取 <code>entries[-keep:]</code> 拿到的是 CRT 入口那几层
+   （<code>mainCRTStartup</code>），完全看不到递归。</li>
+<li>测试 exe 不叫 <code>snow_shot.exe</code>，映像名要能传参。</li>
+</ol>
+<h4>栈长什么样</h4>
+<p>同一组返回地址以 <strong>≈13 KB 一层</strong>的周期重复了 700 次，每层固定这几个：</p>
+<pre><code>ScreenshotFloatingToolPaletteWindow::event            (+0x88 / +0x99)
+ScreenshotFloatingToolPaletteWindow::applyPlacementScreen
+AdDpiStableWindowController::eventFilter              (+0x16A)
+WindowShortcutManager::eventFilter                    (+0x2054, 出现两次)
+QPointer&lt;QWidget&gt;/QPointer&lt;QScreen&gt;::data, QWeakPointer&lt;QObject&gt;::internalData,
+QBasicAtomicInteger&lt;int&gt;::loadRelaxed ...
+</code></pre>
+<p>两个 <code>eventFilter</code> 都在链上很好解释：它们是同一个事件派发的<strong>过滤器链</strong>
+（<code>QApplicationPrivate::notify_helper</code> 会先过全部 object filter 再进 <code>event()</code>），
+不是两层嵌套。真正的环只有两跳：</p>
+<pre><code>ScreenshotFloatingToolPaletteWindow::event(QEvent::WinIdChange)
+  → applyPlacementScreen()
+    → QWindow::setScreen(m_placementScreen)      // 重建平台窗口
+      → QEvent::WinIdChange 又一次送到本 widget
+        → event() → applyPlacementScreen() → ...
+</code></pre>
+<h4>为什么 offscreen 上才炸</h4>
+<p><code>applyPlacementScreen()</code> 的终止条件写成"已经在新屏上就返回"：</p>
+<pre><code class="language-cpp">if (handle-&gt;screen() == m_placementScreen) return false;
+handle-&gt;setScreen(m_placementScreen);
+</code></pre>
+<p>Qt 5.15 的 <code>QWindow::setScreen()</code> 文档原文是 <strong>"If the window has been created, it will be
+recreated on the newScreen"</strong> —— 已创建的窗口会被<strong>重建</strong>，重建就会给 widget 补一个
+<code>QEvent::WinIdChange</code>（这一点文档没写，但栈的形状和"窗口一重建就重发 WinIdChange"的既有
+行为都指向它；本机能复现的 Qt 5.15.2 上实测如此，换 Qt 版本要重新确认）。而 QPA offscreen
+只暴露一块屏：当 <code>m_placementScreen</code> 不是它、<code>setScreen()</code> 又被拒时，<code>handle-&gt;screen()</code>
+永远不等于目标屏 —— 于是每进一层都再 <code>setScreen()</code> 一次，环没有出口，只能等栈耗尽。
+<code>-platform windows</code> 上 <code>setScreen()</code> 能落地，第二轮进来时终止条件成立，所以同样的代码在
+Windows 上一直是好的。</p>
+<p>这也解释了为什么上一轮那些计数器全部"无辜"：环确实不经过 <code>QApplication::notify</code>
+（它只在 <code>notify_helper</code> 之上）、也不经过控制器/采样窗口，它只在<strong>这一个 widget 的
+<code>event()</code> 与 <code>applyPlacementScreen()</code> 之间</strong>闭合。</p>
+<h4>修法</h4>
+<p>一次性尝试，拒绝嵌套重入（和 <code>ScreenshotOriginalImagePreviewWindow::applyGeometry()</code>
+已有的 <code>m_applyingGeometry</code> 同一形状）：</p>
+<pre><code class="language-cpp">if (m_applyingPlacementScreen) return false;
+QScopedValueRollback&lt;bool&gt; applying(m_applyingPlacementScreen, true);
+handle-&gt;setScreen(m_placementScreen);
+</code></pre>
+<h4>修完的判据</h4>
+<table>
+<thead>
+<tr>
+<th>入口</th>
+<th>修前</th>
+<th>修后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-platform offscreen</code>（完整套件）</td>
+<td><code>rc=127</code>（<code>0xC00000FD</code>），716 条 raise</td>
+<td><strong>EXIT=0</strong>，722 条 raise</td>
+</tr>
+<tr>
+<td><code>--color-sampling-only -platform offscreen</code>（CI 上那条）</td>
+<td><code>0xC00000FD</code>，661 条 raise</td>
+<td><strong>EXIT=0</strong>，692 条 raise</td>
+</tr>
+<tr>
+<td><code>-platform windows</code>（完整套件）</td>
+<td>EXIT=0</td>
+<td><strong>EXIT=0</strong></td>
+</tr>
+<tr>
+<td><code>ctest -R snow-shot-global-canvas</code>（这条 exe 的全部 14 个注册条目）</td>
+<td>崩在 #636</td>
+<td><strong>14/14 passed</strong>（87s）</td>
+</tr>
+</tbody>
+</table>
+<p>补一次回归面：工具栏几何直接相关的那条 exe 也重编跑了
+（<code>ctest -R floating-toolbar</code>，17 条）。<code>drag-tests</code> / <code>reverse-drag</code> / <code>seam-straddle-drag</code> /
+<code>drag-print</code> / <code>dpi-transaction-offscreen</code> 全绿；另有 2 条红
+（<code>keyboard-focus-windows-tests</code>、<code>action-layout-tests</code>）<strong>做了 A/B</strong>：把这两个文件退回
+<code>0d52a58d^</code> 重新编译后它们照样失败，所以是本机既有的前台焦点 / 配置原子写问题，与重入闸无关。
+ctest 输出里的 <code>***Not Run</code> 是 exe 没构建，不是失败，别混进判据。</p>
+<p>顺带确认：<code>raise()</code> / <code>setting window masks</code> 这些 "This plugin does not support ..." 警告在
+修完后<strong>照旧刷</strong>，它们只是 offscreen 少几个平台能力，不是症状，不要去"修"它们。</p>
+<h3>C.12 Linux 上的窗口元素选择器仍是 stub（3 条 ctest 因此不再注册）</h3>
+<p><code>window-element-api</code>、<code>selector-phased</code>、<code>selector-lifecycle</code> 这三条 ctest 是<strong>同一个 exe</strong>
+（<code>snow-shot-window-element-api-tests</code> 加 <code>--selector-only</code> / <code>--selector-lifecycle-only</code>），
+三条在 CI 上一起红，报的都是 <code>initial selector refresh failed</code>。</p>
+<p>顺着断言往下读一层就能看到它们同源：</p>
+<pre><code>snow_shot/src/presentation/selector/screenshotselectorserviceclient.cpp:21
+    #if defined(Q_OS_WIN) || defined(Q_OS_MACOS)      ← 真实实现
+    ...
+    #else
+    // Native selector unavailable on unsupported platforms.
+    bool ScreenshotSelectorServiceClient::hasService() const { return false; }
+    bool ScreenshotSelectorServiceClient::ensureService()            { return false; }
+    bool ScreenshotSelectorServiceClient::startRefresh(...)          { return false; }
+</code></pre>
+<p>也就是说 <strong>Linux 走的是 stub 分支，<code>startRefresh()</code> 恒为 false</strong>，三条测试断言的是一个
+不存在的后端，不是产品在 Linux 上算错了。</p>
+<p><strong>这不是"忘了加 ifdef"，而是 C ABI 还没有 X11 这个后端</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>层</th>
+<th>现状</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>snow-ui-selector/src/linux.rs</code></td>
+<td>x11rb 后端<strong>已实现</strong>（<code>refresh</code>/<code>refresh_excluding_ids</code>/<code>refresh_with_displays</code>/<code>release_cache</code>）</td>
+</tr>
+<tr>
+<td><code>snow-ui-selector-c</code>（C ABI）</td>
+<td>backend 枚举只有 <code>Uia</code>/<code>Msaa</code>/<code>Accessibility</code>，没有 X11；<code>lib.rs</code> 只有 <code>cfg(target_os = "macos")</code> 与 <code>not(macos)</code> 两条</td>
+</tr>
+<tr>
+<td><code>snow_ui_selector.h</code></td>
+<td><code>SnowUiSelectorBackend</code> 只有 UIA/MSAA/ACCESSIBILITY</td>
+</tr>
+<tr>
+<td>Qt 侧</td>
+<td><code>#if defined(Q_OS_WIN) \|\| defined(Q_OS_MACOS)</code>，其余平台 stub</td>
+</tr>
+</tbody>
+</table>
+<p>所以要真正接上，得跨三层改：C ABI 加 <code>SNOW_UI_SELECTOR_BACKEND_X11</code> 并在 <code>lib.rs</code> 里把它
+分派到 <code>linux.rs</code>，再把 Qt 侧的门控打开并处理"X11 没有 hwnd，用 XID"这层差异。这是功能开发，
+不是断言修正，不该混在一次修测试的提交里。</p>
+<p><strong>处置</strong>：三条 native 契约改在 <code>if(WIN32 OR APPLE)</code> 里 <code>add_test</code>，Linux 不再注册；
+同一 exe 的三个设置类入口（<code>--shortcut-exit-confirmation-settings-only</code>、
+<code>--auto-qr-settings-only</code>、<code>--guide-settings-only</code>）保持全平台注册，它们在 Linux 上一直是绿的。</p>
+<p><strong>这一步踩到的坑（比结论本身更值得记）</strong>：只把 <code>add_test()</code> 包进条件是不够的。下面这段
+<code>set_tests_properties()</code> 的列表里还列着那三个名字，而对<strong>从未 add 过</strong>的测试调用
+<code>set_tests_properties()</code> 是 <strong>configure 阶段的硬错误</strong>：</p>
+<pre><code>CMake Error at snow_shot/CMakeLists.txt:3622 (set_tests_properties):
+  set_tests_properties Can not find test to add properties to:
+  snow-shot-window-element-api-tests
+</code></pre>
+<p>如果就这么推上去，Linux 的 <code>Configure</code> 步骤会直接失败，比原来红三条严重得多。
+抓到它的办法是把条件临时写成 <code>if(FALSE)</code> <strong>在本机模拟 Linux 分支</strong>——本机只能 configure
+Windows 分支，这正是"未被解析的代码面=盲区"的又一次实例。修法是把三个名字收进
+<code>_snow_shot_native_selector_tests</code> 变量，条件成立才填值，<code>set_tests_properties()</code> 展开它。</p>
+<p>双向判据：</p>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>configure</th>
+<th>注册条目</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>if(WIN32 OR APPLE)</code>（本机真实）</td>
+<td>成功</td>
+<td>6 条（3 native + 3 settings）</td>
+</tr>
+<tr>
+<td><code>if(FALSE)</code>（模拟 Linux）</td>
+<td><strong>成功</strong></td>
+<td>3 条（只剩 settings）</td>
+</tr>
+</tbody>
+</table>
+
 </main>
 </div>
 </body>
