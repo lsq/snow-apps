@@ -7794,6 +7794,33 @@ worker 只在 `changed.wait()` 之后读 `oracle`，promise 自己提供 happens
 
 判据同 §9.6 里的 offscreen 一条：**能力不存在就 `exit(77)` 交给 ctest 判 Skipped**，不要让"环境没有"表现为"产品坏了"。
 
+其中 `adqt-widget-diagnostics-tests` 单独说清楚，因为它**不是环境问题、也不是 Linux 问题**：
+本机 Windows Qt5 一样红，报的是
+
+```
+menu publication diagnostic: stage=setModel mode=2 tree=… updates=0
+  expectedRows=2 publishedRows=-1 modelRows=2 visible=0 hidden=1
+```
+
+`updates=0` 是关键——**Qt5 对这套菜单根本不发任何 `QAccessible` 更新**（Inline / Vertical / Horizontal
+三种模式全为 0，之前看起来"前两种能过"只是 `publishedRows` 里残留了别的对象）。而 Qt6 会发，
+所以这条断言在 Qt6 上成立、在 Qt5 上永远不成立，属于 §9.6 反复出现的那一类"断言写的是 Qt6 契约"。
+
+修法：把"发布"和"数据到位"拆开。Qt6 仍然要求 published 计数精确等于期望；Qt5 只要求
+**视图确实拿到了行**（`tree->model()->rowCount() == expected`），并且在 Qt5 万一真发布了时校验其数值：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  const bool ok = published == expected;
+#else
+  // published < 0 表示 Qt5 压根没发布，此时只能校验数据是否到手
+  const bool ok = (published < 0 || published == expected) && modelRows == expected;
+#endif
+```
+
+诊断输出同时改成**只在真失败时打印**：原来"Qt5 没发布"也会打一行，一次运行刷出四十多行，
+把真正的失败淹掉了——被豁免的分支不该出声。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
