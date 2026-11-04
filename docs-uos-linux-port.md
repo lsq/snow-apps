@@ -7365,3 +7365,140 @@ if (image.depth() <= 8) {
 
 改完 `snow-canvas-image-tests` 从"停在 borrowed RGBA rows … color/alpha rounding"变成全绿。
 副作用是好的：展开后再变换是**逐像素**运算，与分块边界无关，tile 路径与整图路径重新一致。
+
+#### 9.6.61 packed 8 位源 + 分数 DPR：`transformed()` 直接段错误
+
+`QImage::transformed()` 在 Qt5 上碰到 **`depth() <= 8` 的源 + `devicePixelRatio() != 1`** 不是"算错"，是**进程直接没了**
+（`EXIT=139`）。矩阵（最小复现工程，脱离仓库树，`cl` + Qt5 直编）：
+
+| 源格式 | DPR=1 | DPR=1.25 | DPR=2 |
+|---|---|---|---|
+| `Format_Mono` | 正常 | 崩 | 崩 |
+| `Format_MonoLSB` | 正常 | 崩 | 崩 |
+| `Format_Indexed8` | 正常 | 崩 | 崩 |
+| `Format_Grayscale8` | 正常 | 崩 | 崩 |
+
+崩溃点随变换走：`rotate(90)` 后就地 `scale(-1,1)`（即 isometric 镜像那串）最稳，单步 `rotate(90)` 有时能过。
+只要把 DPR 换成 1，同样四组格式 × 六种变换全部正常——**DPR 对像素结果本来就没有影响**，它在 Qt6 里只是元数据。
+
+所以引擎对 `depth() <= 8 && dpr != 1` 走"DPR 中和副本"，算完再回填：
+
+```cpp
+QImage request = image;
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    const bool neutralRatio = image.depth() <= 8 && image.devicePixelRatio() != 1;
+    if (neutralRatio) request.setDevicePixelRatio(1);
+#endif
+    QImage transformed = request.transformed(transform, mode);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    if (neutralRatio && !transformed.isNull())
+        transformed.setDevicePixelRatio(image.devicePixelRatio());
+    // …紧随其后的 colorSpace / offset 补齐见 9.6.62
+#endif
+```
+
+夹具 `packedFormatsSurviveFractionalDpr()`：4 格式 × 6 变换 × 2 采样模式，先取 DPR=1 的结果当 oracle，
+再取 DPR=1.25 的结果比较"像素逐字节相同 + DPR 仍是 1.25"。反向验证：删掉 `setDevicePixelRatio(1)` 那两行，
+`MUTATION EXIT=139`；恢复后 `EXIT=0`。
+
+教训不在"补个守卫"，而在**崩溃定位**：这条红最初表现为整个 exe 无输出退出，`ctest` 只说 fail。
+用 `IMG_PROGRESS` 探针（env-gated `fprintf`，打进产品 TU、复用已链接的测试 exe）才把范围从"整轮"缩到
+"`Format_Mono` + `dpr=1.25` + `rotate(90).scale(-1,1)` 这一格"。
+
+#### 9.6.62 `transformed()` 的元数据契约：Qt5 丢 colorSpace 与 offset
+
+同一批用例里冒出来的第二条：`optimized operations must preserve Qt metadata` 在
+`dpr=1.25/1.25 dpm=… offset=17,29/0,0` 上红——**变换后 offset 变回 0,0，colorSpace 变成 sRGB**。探针（`meta_probe`）逐项确认：
+
+| 元数据 | Qt5 `transformed()` | Qt6 | 引擎承诺 |
+|---|---|---|---|
+| `dotsPerMeterX/Y` | 保留 | 保留 | 保留 |
+| `text()` | 保留 | 保留 | 保留 |
+| `colorSpace()` | **丢**（回到默认） | 保留 | 保留 |
+| `offset()` | **丢**（归零） | 保留 | 保留 |
+
+引擎的实现契约是 Qt6 语义，所以 Qt5 分支在 `transformed()` 之后补回这两项（见 9.6.61 代码块后半段）。
+
+夹具侧的问题更值得记：这 12 处断言原来是拿 `source.transformed(...)` 直接当参考量的，等于**把 Qt5 的缺陷当标准答案**。
+引入 `qtTransformReference()` 把参考量先折到 Qt6 语义（补 `setColorSpace` / `setOffset`）再比，
+12 处裸调用全部改走它。
+
+判据：**任何"参照实现"如果本身是被 Qt5 实现的 API，必须先把它折到目标语义上再比**，否则测出来的是 Qt5 的行为差异，
+不是产品的行为差异——而且方向是反的：产品对，测试红。
+
+#### 9.6.63 平滑采样域：源域重采样、两个"写什么都不写"的格式、以及不可信的 `mirrored()`
+
+三条互相独立，但全部只在 `Qt::SmoothTransformation` 路径上出现。
+
+**(1) 采样域不同 ⇒ 必须折到同一墨空间 + 给容差。** Qt5 的 `qt_scaleImage` 在**源格式域**重采样：
+
+- straight-alpha 源（`ARGB32` / `RGB888` / `RGB16` …）返回**预乘**结果；
+- 部分 16 位格式（`RGBA64` 系）**原样返回 packed**，根本没转。
+
+Qt6/引擎则在统一的 32 位预乘墨上做。所以比较时先两边都 `convertToFormat(Format_ARGB32_Premultiplied)`，
+再按源位深给容差：
+
+```cpp
+// depth<24：5 位通道一格 = 255/31 ≈ 8.2，取 9；其余取 2
+const int tolerance = source.depth() < 24 ? 9 : 2;
+```
+
+**(2) `Grayscale16` / `RGB30` 源目标同格式的平滑变换，Qt5 上是空操作。** 探针 `smooth_matrix` / `target_smooth`
+把"源格式 × 目标格式 × 采样模式"全跑了一遍，只有这两格输出**全 0**（不是差一格，是一个像素都没写）。
+修法是"画进墨再转回来"，源也要一起转，否则混合器还是走同格式那条死路：
+
+```cpp
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+const QImage::Format paintedFormat = format;
+const bool paintThroughInk =
+    mode == Qt::SmoothTransformation &&
+    (format == QImage::Format_Grayscale16 || format == QImage::Format_RGB30);
+if (paintThroughInk) {
+    format = paintedFormat == QImage::Format_Grayscale16
+                 ? QImage::Format_RGBA64_Premultiplied
+                 : QImage::Format_ARGB32_Premultiplied;
+}
+#endif
+// …painter 分支
+if (paintThroughInk) view = view.convertToFormat(format);
+painter.drawImage(QPoint(), view);
+painter.end();
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+if (paintThroughInk) {
+    QImage converted = result.convertToFormat(paintedFormat);
+    copyMetadata(image, converted);
+    return converted.sizeInBytes() < qsizetype(snow::memory::kMappedPixelBufferMinimum)
+               ? converted : snowCanvasCopyImage(converted);
+}
+#endif
+```
+
+反向验证：关掉 `paintThroughInk`，`source format 28` 的墨空间差 **254**（全空 vs 正确），恢复后绿。
+
+**(3) `QImage::mirrored()` 在 Qt5 上不可信。** 两处独立证据：
+
+- alpha=255 的像素也会挪一格：`ff0a141e` → `ff0d151e`（`mirror_cmp`）；
+- 大图 straight-alpha 直接**返回未映射结果**（`mirror_premul`）。
+
+改成精确置换，两版行为一致：
+
+```cpp
+working = working.transformed(
+    QTransform().scale(mirrored.testFlag(Qt::Horizontal) ? -1 : 1,
+                       mirrored.testFlag(Qt::Vertical) ? -1 : 1),
+    Qt::FastTransformation);
+```
+
+**(4) 但大图平滑镜像的 oracle 得反过来取 `FastTransformation`。** 引擎修好 `mirrored()` 之后，大图块仍然大面积差 255：
+`mirror_probe` 证明**引擎的输出等于"精确整像素镜像"**，而 Qt5 的平滑镜像是**围绕半像素原点重采样**的，
+两者系统性差一格。所以这一格的参照量不能是 `Qt::SmoothTransformation` 的 Qt5 结果，只能取 `FastTransformation`
+（两版一致的精确置换）：
+
+```cpp
+// Qt5 平滑镜像 = 半像素原点的重采样，与"正确镜像"系统性差一格；
+// 参考量取 FastTransformation：两版都是精确置换。
+const QImage oracle = qtTransformReference(large, transform, Qt::FastTransformation);
+```
+
+命名上这三条都属于同一类：**"Qt5 也能跑、但跑的不是同一件事"**。区分办法只有一个——把矩阵跑全，
+让每一格都有具体数值可比；"看起来没问题"的格子最贵。

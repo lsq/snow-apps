@@ -606,10 +606,9 @@ bool snowCanvasCopyRgba8888Rows(const QImage& image, int firstRow, int rowCount,
                         image.format());
             view.setColorTable(image.colorTable());
             view.setColorSpace(image.colorSpace());
-            return copyRows(transformColor
-                                ? convertColorAndFormat(view, colorSpace, QImage::Format_RGBA8888,
-                                                        flags)
-                                : view.convertToFormat(QImage::Format_RGBA8888, flags));
+            return copyRows(transformColor ? convertColorAndFormat(view, colorSpace,
+                                                                   QImage::Format_RGBA8888, flags)
+                                           : view.convertToFormat(QImage::Format_RGBA8888, flags));
         }
 
         // A tile, including Qt's highest-precision intermediate format, is at
@@ -869,7 +868,37 @@ QImage snowCanvasTransformImage(const QImage& image, const QTransform& transform
           image.format() == QImage::Format_RGBA64)) ||
         (reflection && !scaleTransform && mode == Qt::SmoothTransformation && !nativePainterFormat);
     if (exactQtFallback) {
-        QImage transformed = image.transformed(transform, mode);
+        QImage request = image;
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        // Qt 5's 1-bit transform path buffers one row at a time and keeps the
+        // source's device pixel ratio in the stride arithmetic, so a Format_Mono /
+        // MonoLSB raster carrying a fractional ratio segfaults inside
+        // QImage::transformed() (rotate 90 for MonoLSB, rotate 90 + mirror for
+        // both). For these transforms the ratio is metadata: the pixels are
+        // identical with and without it, so hand Qt a DPR-neutral copy and put the
+        // caller's ratio back on the result instead of losing either the pixels or
+        // the process.
+        const bool neutralRatio = image.depth() <= 8 && image.devicePixelRatio() != 1;
+        if (neutralRatio) {
+            request.setDevicePixelRatio(1);
+        }
+#endif
+        QImage transformed = request.transformed(transform, mode);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+        if (neutralRatio && !transformed.isNull()) {
+            transformed.setDevicePixelRatio(image.devicePixelRatio());
+        }
+        // Qt 5 keeps dots-per-meter and text on a transform result but drops the
+        // colour space and the placement offset; Qt 6 copies all four through its
+        // internal copyMetadata(). Without this the same caller would get metadata
+        // that depends on which branch handled the transform -- an indexed image
+        // rotated through the fallback would lose its profile while the 32-bit one
+        // kept it.
+        if (!transformed.isNull()) {
+            transformed.setColorSpace(image.colorSpace());
+            transformed.setOffset(image.offset());
+        }
+#endif
         return transformed.sizeInBytes() < qsizetype(snow::memory::kMappedPixelBufferMinimum)
                    ? transformed
                    : snowCanvasCopyImage(transformed);
@@ -921,15 +950,20 @@ QImage snowCanvasTransformImage(const QImage& image, const QTransform& transform
                 image, image.format(),
                 [workingFormat, mirrored](const QImage& strip) {
                     QImage working = strip.convertToFormat(workingFormat);
-                    // This bounded temporary is owned by Qt, so its public in-place
-                    // flip retains its allocation. Managed external images cannot.
+                // This bounded temporary is owned by Qt, so its public in-place
+                // flip retains its allocation. Managed external images cannot.
 #if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
                     working.flip(mirrored);
 #else
-                    // Qt5 (and every Qt6 before 6.9) has no in-place flip; the
-                    // out-of-place mirror is still copy-on-write, so the pixel data
-                    // is not duplicated while `working` is the only owner.
-                    working = working.mirrored(mirrored);
+                    // Qt5 (and every Qt6 before 6.9) has no in-place flip. Do not reach
+                    // for mirrored(): on Qt 5 it round-trips through premultiplied ink,
+                    // which moves a channel by one even at alpha 255, and on a large
+                    // straight-alpha raster it hands back an unmapped copy instead of a
+                    // mirror. The fast transform is the exact permutation.
+                    working = working.transformed(
+                        QTransform().scale(mirrored.testFlag(Qt::Horizontal) ? -1 : 1,
+                                           mirrored.testFlag(Qt::Vertical) ? -1 : 1),
+                        Qt::FastTransformation);
 #endif
                     return std::move(working).convertToFormat(strip.format());
                 },
@@ -972,6 +1006,21 @@ QImage snowCanvasTransformImage(const QImage& image, const QTransform& transform
         format = image.depth() > 32 ? QImage::Format_RGBA64_Premultiplied
                                     : QImage::Format_ARGB32_Premultiplied;
     }
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // Qt 5's smooth blitter only covers part of the layouts the canvas allows: a
+    // smoothed draw whose source and target are both Format_Grayscale16 (or both
+    // Format_RGB30) writes nothing at all, so a smoothed mirror came back as a blank
+    // raster. Painting premultiplied ink and converting back routes exactly those two
+    // through a pair the blitter does handle.
+    const QImage::Format paintedFormat = format;
+    const bool paintThroughInk =
+        mode == Qt::SmoothTransformation &&
+        (format == QImage::Format_Grayscale16 || format == QImage::Format_RGB30);
+    if (paintThroughInk) {
+        format = paintedFormat == QImage::Format_Grayscale16 ? QImage::Format_RGBA64_Premultiplied
+                                                             : QImage::Format_ARGB32_Premultiplied;
+    }
+#endif
     const bool transparentZero = image.hasAlphaChannel() ||
                                  format == QImage::Format_ARGB32_Premultiplied ||
                                  format == QImage::Format_RGBA64_Premultiplied;
@@ -988,8 +1037,23 @@ QImage snowCanvasTransformImage(const QImage& image, const QTransform& transform
     QImage view(image.constBits(), image.width(), image.height(), image.bytesPerLine(),
                 image.format());
     view.setColorTable(image.colorTable());
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    // The pair matters, not just the target: a 16-bit grey *source* drawn into 32-bit
+    // ink is blank as well, so the source has to make the trip too.
+    if (paintThroughInk)
+        view = view.convertToFormat(format);
+#endif
     painter.drawImage(QPoint(), view);
     painter.end();
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    if (paintThroughInk) {
+        QImage converted = result.convertToFormat(paintedFormat);
+        copyMetadata(image, converted);
+        return converted.sizeInBytes() < qsizetype(snow::memory::kMappedPixelBufferMinimum)
+                   ? converted
+                   : snowCanvasCopyImage(converted);
+    }
+#endif
     copyMetadata(image, result);
     return result;
 }
