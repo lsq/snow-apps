@@ -7585,6 +7585,18 @@ req = urllib.request.Request(target, headers={"Range": f"bytes={len(collected)}-
 `QFontMetrics` 走整型 advance，Linux 的 DejaVu 字距落在 .5 边界上时两者差 1 px 是必然的。
 这类断言该改成"±1 px 内相等"，而不是把 Windows 的取整结果当规范。
 
+已经改掉的两处（本机 Windows 改前后都绿——差值只在 Linux 上出现）：
+
+| 位置 | 原来 | 现在 |
+|---|---|---|
+| `ant_design_qt/tests/button_lifetime_tests.cpp` | 宽、高都必须精确等于 `horizontalAdvance`/`height` | 两轴都放宽到 ±1，失败消息里带上实际差值 |
+| `snow_shot/tests/settings_page_loading_tests.cpp` | 宽 ±2，高必须精确相等 | 高也放宽到 ±1 |
+
+产品侧的成因也查清了，不是随意放宽：`measureTextWidth()`（`button.cpp`）取的是
+`max(horizontalAdvance, boundingRect().width())`，**字形 bearing 探出 advance 时后者大 1**，
+而 Linux 的 DejaVu 正是这种字体。所以"sizeHint 比 advance 宽 1 px"是正确行为，
+断言该跟着产品语义走。真正的回归（内容内边距被加回来）会移动 8 px 以上，±1 的松弛度不影响判别力。
+
 #### 9.7.3 鼠标 / 悬停坐标（5 条）
 
 `snow-shot-physical-cursor-tests`（fractional hover）、`snow-shot-toolbar-guide-hover-tests`（global coordinates）、

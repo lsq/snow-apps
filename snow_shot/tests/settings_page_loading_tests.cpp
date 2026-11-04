@@ -1524,10 +1524,11 @@ void relatedSettingsLayoutAndKeyboard(const settings::SettingsRegistry& registry
                     QFont font = button->font();
                     font.setPixelSize(metric.fontSize);
                     const QFontMetrics metrics(font);
-                    // Glyph bearings can add a pixel or two beyond the text advance.
+                    // Glyph bearings can add a pixel or two beyond the text advance,
+                    // and fontconfig's line metrics can differ from fm.height() by one.
                     require(qAbs(buttonRect.width() -
                                  metrics.horizontalAdvance(button->accessibleName())) <= 2 &&
-                                buttonRect.height() == metrics.height(),
+                                qAbs(buttonRect.height() - metrics.height()) <= 1,
                             "related buttons size to their text without built-in padding");
                     if (previous.isNull() || previous.top() != buttonRect.top()) {
                         require(buttonRect.left() == headingRect.left(),

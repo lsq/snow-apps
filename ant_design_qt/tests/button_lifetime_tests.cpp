@@ -19,10 +19,11 @@
 #include <iostream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 namespace {
 
-void require(bool condition, const char* message) {
+void require(bool condition, const std::string& message) {
   if (!condition) throw std::runtime_error(message);
 }
 
@@ -38,8 +39,18 @@ void unpaddedButtonsSizeToText() {
     const auto style = adqt::widgets::detail::resolveButtonVisualStyle(input);
     const QFontMetrics metrics(style.metrics.font);
     button.setContentPaddingEnabled(false);
-    require(button.sizeHint() == QSize(metrics.horizontalAdvance(button.text()), metrics.height()),
-            "unpadded text and link buttons must fit their content");
+    // The style measures with measureTextWidth(), which keeps the larger of the
+    // advance and the tight bounding rect; on fonts where a glyph bearing pokes
+    // past the advance (the Linux DejaVu metrics do) that is one pixel wider.
+    // One pixel of slack still catches the regression this guards against: a
+    // restored content padding moves the hint by 8 px or more.
+    const QSize unpadded = button.sizeHint();
+    const int expectedWidth = metrics.horizontalAdvance(button.text());
+    const int deltaWidth = unpadded.width() - expectedWidth;
+    const int deltaHeight = unpadded.height() - metrics.height();
+    require(qAbs(deltaWidth) <= 1 && qAbs(deltaHeight) <= 1,
+            "unpadded text and link buttons must fit their content (delta " +
+                std::to_string(deltaWidth) + "x" + std::to_string(deltaHeight) + " px)");
     require(button.minimumSizeHint() == button.sizeHint(),
             "unpadded buttons must not reserve their old minimum width");
     button.setContentPaddingEnabled(true);

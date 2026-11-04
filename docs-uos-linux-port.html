@@ -8805,7 +8805,6 @@ exe（10-31 10:07），而测试树里还躺着 <strong>0 字节的 <code>adqt-s
 （<code>installTranslator</code> 返回 FALSE）就是这么拿到的。</p>
 <p>这两条合起来说明一件事：<strong>"测试红"这个信号本身要先验证可信度</strong>——比它新不新、你看不看得见它的输出，
 任何一条不成立，后面所有排查都是白干。</p>
-
 <h4>9.6.65 CI 日志下载固定在 707046 字节处断流</h4>
 <p><code>gh-ci.py logs</code> 一直抛 <code>http.client.IncompleteRead(707046 bytes read)</code>。加了三重重试之后<strong>每次仍然停在同一个字节数</strong>，
 说明不是网络抖动，而是这条链路上单个流式响应被截断（707046 ≈ 690 KB）。</p>
@@ -8820,11 +8819,123 @@ exe（10-31 10:07），而测试树里还躺着 <strong>0 字节的 <code>adqt-s
 <pre><code class="language-python">req = urllib.request.Request(target, headers={&quot;Range&quot;: f&quot;bytes={len(collected)}-{len(collected)+CHUNK-1}&quot;})
 </code></pre>
 <p>代价是每段一次 302，慢（约 3 分钟）；但"看不到日志"会让整轮 CI 白跑，这笔账划算。</p>
-
 <h3>9.7 Linux CI 单元测试残留清单（2026-11-04，56/829）</h3>
 <p><code>962cb5ab</code> 上 Linux x64 Release 的 <code>ctest</code>：<strong>93% passed, 56 failed out of 829</strong>（573 s）。构建、deb、AppImage、
 元数据校验全绿，红的全在单元测试这一步。</p>
 <p>先说结论：这 56 条<strong>不是 56 个独立问题</strong>，而是几类根因在不同套件上的投影。</p>
+<h4>9.7.1 崩溃（4 条，最高优先）</h4>
+<table>
+<thead>
+<tr>
+<th>用例</th>
+<th>现象</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adqt-button-signal-lifetime-tests</code></td>
+<td><code>activationAllowsOwnerDeletion()</code> signal 11，栈是空的</td>
+</tr>
+<tr>
+<td><code>snow-canvas-image-tests</code></td>
+<td><strong>SEGFAULT</strong></td>
+</tr>
+<tr>
+<td><code>snow-shot-mcp-document-tests</code></td>
+<td>SEGFAULT</td>
+</tr>
+<tr>
+<td><code>snow-shot-mcp-application-tests</code></td>
+<td>SEGFAULT</td>
+</tr>
+</tbody>
+</table>
+<p><code>snow-canvas-image-tests</code> 这一条在 <code>dd92facf</code> 里应该已经跟着修掉了：本机崩溃点是
+"packed 8 位源 + 分数 DPR 调 <code>transformed()</code>"（§9.6.61），Release/‑O2 下同样会踩。
+所以下一次 run 的 delta 同时是这条修复的<strong>反向验证</strong>：它若还崩，说明 Linux 上另有第二个崩溃点。</p>
+<h4>9.7.2 字体度量：把「Windows 上恰好相等」写成了断言</h4>
+<table>
+<thead>
+<tr>
+<th>用例</th>
+<th>断言</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>adqt-button-lifetime-tests</code></td>
+<td><code>sizeHint() == QSize(horizontalAdvance(text), metrics.height())</code> 精确相等</td>
+</tr>
+<tr>
+<td><code>snow-shot-settings-navigation-tests</code></td>
+<td>同上，换了个套件</td>
+</tr>
+</tbody>
+</table>
+<p>两边用的是同一个 <code>QFont</code>，但 <code>AdButton::sizeHint()</code> 走的是 style 里的度量（可能过 <code>QFontMetricsF</code> 再取整），
+<code>QFontMetrics</code> 走整型 advance，Linux 的 DejaVu 字距落在 .5 边界上时两者差 1 px 是必然的。
+这类断言该改成"±1 px 内相等"，而不是把 Windows 的取整结果当规范。</p>
+<p>已经改掉的四处（本机 Windows 上改前后都绿，等差在 Linux 上才出现）：</p>
+<table>
+<thead>
+<tr>
+<th>位置</th>
+<th>原来</th>
+<th>现在</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ant_design_qt/tests/button_lifetime_tests.cpp</code></td>
+<td>宽、高都必须精确等于 <code>horizontalAdvance</code>/<code>height</code></td>
+<td>两轴都放宽到 ±1，失败消息里带上实际差值</td>
+</tr>
+<tr>
+<td><code>snow_shot/tests/settings_page_loading_tests.cpp</code></td>
+<td>宽 ±2，高必须精确相等</td>
+<td>高也放宽到 ±1</td>
+</tr>
+</tbody>
+</table>
+<p>产品侧的成因也查清了，不是随意放宽：<code>measureTextWidth()</code>（<code>button.cpp</code>）取的是
+<code>max(horizontalAdvance, boundingRect().width())</code>，<strong>字形 bearing 探出 advance 时后者大 1</strong>，
+而 Linux 的 DejaVu 正是这种字体。所以"sizeHint 比 advance 宽 1 px"是正确行为，
+断言该跟着产品语义走。真正的回归（内容内边距被加回来）会移动 8 px 以上，±1 的松弛度不影响判别力。</p>
+<h4>9.7.3 鼠标 / 悬停坐标（5 条）</h4>
+<p><code>snow-shot-physical-cursor-tests</code>（fractional hover）、<code>snow-shot-toolbar-guide-hover-tests</code>（global coordinates）、
+<code>snow-shot-screenshot-selection-toolbar-hover-tests</code>、<code>snow-shot-export-dialog-placement-tests</code>、<code>snow-canvas-tablet-input-tests</code>
+（subpixel 位置 / 压力归一化）。共性是<strong>合成事件在 offscreen 与 Windows 上的坐标口径不同</strong>（§9.6 里已记过
+窗口级投递被 <code>QWidgetWindow</code> 四舍五入成整数）。这批要么改成直投 widget，要么显式按平台分叉。</p>
+<h4>9.7.4 文本渲染 / 字形缓存（7 条）</h4>
+<p><code>snow-canvas-text-draft-tests</code>、<code>snow-canvas-text-render-cache-tests</code>（同一条 882 px 不一致：
+<code>reference-only=1 candidate-only=2 both-inked=879 cold=1 builds=3 hits=0</code>）、<code>snow-canvas-serial-number-render-tests</code>、
+<code>snow-canvas-serial-number-font-tests</code>、<code>snow-canvas-filter-render-tests</code>、<code>snow-shot-screenshot-canvas-renderer-tests</code>、
+<code>snow-shot-ocr-canvas-renderer-tests</code> / <code>snow-shot-ocr-line-box-rendering-tests</code>（"streaming replacement must
+reconfigure only its glyph"）。</p>
+<p>两个独立根因：worker 线程重建字形缓存时与 GUI 线程的字体数据库状态不一致；以及"替换文本时只重配字形、
+丢弃缓存像素"这条路径在 Linux 字体回退链下没被走到。</p>
+<h4>9.7.5 平台能力缺失（<code>offscreen</code> 无托盘 / 无真实桌面）</h4>
+<p><code>snow-shot-system-tray-controller-tests</code>、<code>snow-shot-recording-export-tray-tests</code>（日志里有
+<code>QObject::connect: No such signal QPlatformNativeInterface::systemTrayWindowChanged(QScreen*)</code>）、
+<code>snow-shot-direct-capture-native-tests</code>（"direct capture lost the full desktop snapshot"）、
+<code>snow-shot-scrolling-capture-settings-tests</code>、<code>snow-shot-recording-capture-exclusion-tests</code>、
+<code>adqt-widget-diagnostics-tests</code>（菜单 model 装载后 <code>publishedRows=-1</code>）。</p>
+<p>判据同 §9.6 里的 offscreen 一条：<strong>能力不存在就 <code>exit(77)</code> 交给 ctest 判 Skipped</strong>，不要让"环境没有"表现为"产品坏了"。</p>
+<h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
+<p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
+<code>api-client</code>（"local API test server timed out waiting for a request"）、
+<code>ocr-cpu-recognition-service</code>、<code>ocr-managed-runtime</code>（模型未 staged）、
+<code>cloud-upload</code>、<code>cloud-upload-settings</code>、<code>text-translation</code>、<code>configuration-archive</code>、
+<code>collage-pdf-export</code>、<code>image-split-editor</code>、<code>image-split-canvas</code>、<code>overlay-frame-presenter</code>、
+<code>magnifier-render</code>、<code>magnifier-interaction</code>、<code>pinned-recognition-save</code>、<code>pinned-quick-save</code>、
+<code>about-page</code>、<code>settings-color-commit</code>、<code>shortcut-key-row</code>、<code>screen-recording-shortcut</code>、
+<code>recording-history-shortcut</code>、<code>recording-audio-controller</code>、<code>recording-audio-gain-popover</code>、
+<code>recording-hidden-tool-shortcut</code>、<code>print-export-snapshot</code>、<code>region-shadow-renderer</code>、
+<code>selection-background-preview</code>、<code>layout-compaction</code>、<code>export-artifact</code>。</p>
+<p>这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是<strong>同一根因打多个套件</strong>，修一条消一片；
+这一组反过来，修一条只消一条。</p>
+<p>工具侧同时补了两条：<code>gh-ci.py</code> 的 <code>read_body()</code> 重试 + Range 分段（§9.6.65），
+以及 GUI 测试的 <code>-o file,txt</code>（§9.6.64）。没有这两条，上面这张表根本读不出来。</p>
 <h4>9.7.1 崩溃（4 条，最高优先）</h4>
 <table>
 <thead>
