@@ -8163,6 +8163,35 @@ menu publication diagnostic: stage=setModel mode=2 tree=… updates=0
 诊断输出同时改成**只在真失败时打印**：原来"Qt5 没发布"也会打一行，一次运行刷出四十多行，
 把真正的失败淹掉了——被豁免的分支不该出声。
 
+**（6）Print Screen 录制**——`snow-shot-shortcut-key-row-tests` 报
+`a new recording session must save the new physical position`。
+
+`ShortcutRecorder` 的原生实现只有 Windows（`PrintScreenShortcutRecorder`）：非 Windows 的
+`handleKeyEvent()` 直接 `return false`，不产生任何事件。而 `ShortcutPlatform` 枚举只有 `MacOS`
+一个成员，所以 Linux 上的绑定**不可能**带物理键位置。测试的 `#else` 分支是照着 macOS 写的
+（失败消息自己都写着 "native macOS recording"），Linux 跟着掉进去，最后一条
+`physicalKeys.value(MacOS, 128) == 8` 必然失败——`128` 正是 `macVirtualKeyForBinding()`
+在找不到映射时的兜底值。
+
+前半段对两个平台都成立（裸 release 不记录、无关 release 不覆盖已记录的 Ctrl+A、Cancel 丢弃），
+所以只把末尾一条分叉：
+
+```cpp
+#if defined(Q_OS_MACOS)
+    require(portableText(session.saved) == QStringList{QStringLiteral("Ctrl+C")} &&
+                session.saved.first().physicalKeys.value(shortcut_domain::ShortcutPlatform::MacOS,
+                                                         128) == 8,
+            "a new recording session must save the new physical position");
+#else
+    require(portableText(session.saved) == QStringList{QStringLiteral("Ctrl+C")} &&
+                session.saved.first().physicalKeys.isEmpty(),
+            "a recording without native capture must save the combination itself");
+#endif
+```
+
+括号里那条 `isEmpty()` 是**有意义的**：它把"这个平台没有物理位置"写成契约。
+将来谁在 Linux 上补了物理键表，这条会失败并逼他改断言，而不是悄悄放行。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
@@ -8171,7 +8200,7 @@ menu publication diagnostic: stage=setModel mode=2 tree=… updates=0
 `cloud-upload`、`cloud-upload-settings`、`text-translation`、`configuration-archive`、
 `collage-pdf-export`、`image-split-editor`、`image-split-canvas`、`overlay-frame-presenter`、
 `magnifier-render`、`magnifier-interaction`、`pinned-recognition-save`、`pinned-quick-save`、
-`about-page`、`settings-color-commit`、`shortcut-key-row`、`screen-recording-shortcut`、
+`about-page`、`settings-color-commit`、`screen-recording-shortcut`、
 `recording-history-shortcut`、`recording-audio-controller`、`recording-audio-gain-popover`、
 `recording-hidden-tool-shortcut`、`print-export-snapshot`、`region-shadow-renderer`、
 `selection-background-preview`、`layout-compaction`、`export-artifact`。

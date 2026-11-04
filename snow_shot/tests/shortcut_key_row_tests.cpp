@@ -1338,9 +1338,13 @@ void printScreenRecordingPreservesEventOrderAndLifecycle() {
     require(portableText(session.saved) == QStringList{QStringLiteral("Meta+Shift+Print")},
             "a new recording session must preserve Windows-key combinations independently");
 #else
+    // Neither macOS nor Linux has the native Print Screen capture that
+    // `PrintScreenShortcutRecorder` provides on Windows (§9.7.5 item 6): the
+    // row sees ordinary key events, and a bare release records nothing.
     session.key(QEvent::KeyRelease, Qt::Key_Print, Qt::AltModifier);
     session.flush();
-    require(session.validated.isEmpty(), "a release cannot start a native macOS recording");
+    require(session.validated.isEmpty(),
+            "a bare release must not start a recording without native capture");
     session.key(QEvent::KeyPress, Qt::Key_A, Qt::ControlModifier);
     session.key(QEvent::KeyRelease, Qt::Key_Print, Qt::AltModifier);
     session.flush();
@@ -1354,10 +1358,20 @@ void printScreenRecordingPreservesEventOrderAndLifecycle() {
     session.flush();
     session.modal->acceptButton()->click();
     session.flush();
+#if defined(Q_OS_MACOS)
     require(portableText(session.saved) == QStringList{QStringLiteral("Ctrl+C")} &&
                 session.saved.first().physicalKeys.value(shortcut_domain::ShortcutPlatform::MacOS,
                                                          128) == 8,
             "a new recording session must save the new physical position");
+#else
+    // `ShortcutPlatform` has one member, `MacOS`, so a Linux binding carries no
+    // physical position at all: `handleKeyEvent()` is a no-op there and the
+    // legend is the whole record. Asserting the macOS position would have
+    // demanded a value the platform cannot produce.
+    require(portableText(session.saved) == QStringList{QStringLiteral("Ctrl+C")} &&
+                session.saved.first().physicalKeys.isEmpty(),
+            "a recording without native capture must save the combination itself");
+#endif
 #endif
 }
 
@@ -2120,8 +2134,9 @@ void adjustableDelayUsesWheelAndClampsRange() {
             "scrolling over the delay title must persist and publish a one-second increment");
 
     const QPoint titlePoint = delayTitleLabel->rect().center();
-    SnowEnterEventInstance enterEvent(QPointF(titlePoint), QPointF(delayTitleLabel->mapTo(&row, titlePoint)),
-                           QPointF(delayTitleLabel->mapToGlobal(titlePoint)));
+    SnowEnterEventInstance enterEvent(QPointF(titlePoint),
+                                      QPointF(delayTitleLabel->mapTo(&row, titlePoint)),
+                                      QPointF(delayTitleLabel->mapToGlobal(titlePoint)));
     QCoreApplication::sendEvent(delayTitleLabel, &enterEvent);
     require(delayUnderline->isVisible() && delayUnderline->height() == 2 &&
                 delayUnderline->property("highlightColor").value<QColor>() ==

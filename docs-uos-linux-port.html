@@ -9342,6 +9342,29 @@ void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::
 </code></pre>
 <p>诊断输出同时改成<strong>只在真失败时打印</strong>：原来"Qt5 没发布"也会打一行，一次运行刷出四十多行，
 把真正的失败淹掉了——被豁免的分支不该出声。</p>
+<p><strong>（6）Print Screen 录制</strong>——<code>snow-shot-shortcut-key-row-tests</code> 报
+<code>a new recording session must save the new physical position</code>。</p>
+<p><code>ShortcutRecorder</code> 的原生实现只有 Windows（<code>PrintScreenShortcutRecorder</code>）：非 Windows 的
+<code>handleKeyEvent()</code> 直接 <code>return false</code>，不产生任何事件。而 <code>ShortcutPlatform</code> 枚举只有 <code>MacOS</code>
+一个成员，所以 Linux 上的绑定<strong>不可能</strong>带物理键位置。测试的 <code>#else</code> 分支是照着 macOS 写的
+（失败消息自己都写着 "native macOS recording"），Linux 跟着掉进去，最后一条
+<code>physicalKeys.value(MacOS, 128) == 8</code> 必然失败——<code>128</code> 正是 <code>macVirtualKeyForBinding()</code>
+在找不到映射时的兜底值。</p>
+<p>前半段对两个平台都成立（裸 release 不记录、无关 release 不覆盖已记录的 Ctrl+A、Cancel 丢弃），
+所以只把末尾一条分叉：</p>
+<pre><code class="language-cpp">#if defined(Q_OS_MACOS)
+    require(portableText(session.saved) == QStringList{QStringLiteral(&quot;Ctrl+C&quot;)} &amp;&amp;
+                session.saved.first().physicalKeys.value(shortcut_domain::ShortcutPlatform::MacOS,
+                                                         128) == 8,
+            &quot;a new recording session must save the new physical position&quot;);
+#else
+    require(portableText(session.saved) == QStringList{QStringLiteral(&quot;Ctrl+C&quot;)} &amp;&amp;
+                session.saved.first().physicalKeys.isEmpty(),
+            &quot;a recording without native capture must save the combination itself&quot;);
+#endif
+</code></pre>
+<p>括号里那条 <code>isEmpty()</code> 是<strong>有意义的</strong>：它把"这个平台没有物理位置"写成契约。
+将来谁在 Linux 上补了物理键表，这条会失败并逼他改断言，而不是悄悄放行。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、
@@ -9349,7 +9372,7 @@ void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::
 <code>cloud-upload</code>、<code>cloud-upload-settings</code>、<code>text-translation</code>、<code>configuration-archive</code>、
 <code>collage-pdf-export</code>、<code>image-split-editor</code>、<code>image-split-canvas</code>、<code>overlay-frame-presenter</code>、
 <code>magnifier-render</code>、<code>magnifier-interaction</code>、<code>pinned-recognition-save</code>、<code>pinned-quick-save</code>、
-<code>about-page</code>、<code>settings-color-commit</code>、<code>shortcut-key-row</code>、<code>screen-recording-shortcut</code>、
+<code>about-page</code>、<code>settings-color-commit</code>、<code>screen-recording-shortcut</code>、
 <code>recording-history-shortcut</code>、<code>recording-audio-controller</code>、<code>recording-audio-gain-popover</code>、
 <code>recording-hidden-tool-shortcut</code>、<code>print-export-snapshot</code>、<code>region-shadow-renderer</code>、
 <code>selection-background-preview</code>、<code>layout-compaction</code>、<code>export-artifact</code>。</p>
