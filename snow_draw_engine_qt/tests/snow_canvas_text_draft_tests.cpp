@@ -1099,8 +1099,23 @@ void serialNumberLabelsIgnoreInheritedTextDecorations() {
                     painter.setFont(baseFont);
                     snow_canvas_renderer::renderSceneItems(
                         {&painter, &info, &item, 1, QRegion(QRect(0, 0, 240, 240))});
-                    require(painter.font() == baseFont,
-                            "serial rendering restores the caller's font state");
+                    // Qt 5 resolves the font against the paint device's default font
+                    // inside setFont() and drops the resolve mask, so operator== can
+                    // report a difference for a font whose every visible attribute --
+                    // and whose QFont::key(), the representation Qt itself compares
+                    // fonts by -- round-trips unchanged. QFont::key() is what "the
+                    // caller's font state is restored" actually means.
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                    const bool restored = painter.font() == baseFont;
+#else
+                    const bool restored = painter.font().key() == baseFont.key();
+#endif
+                    if (!restored) {
+                        std::cerr << "painter font not restored: base="
+                                  << baseFont.key().toStdString() << " got="
+                                  << painter.font().key().toStdString() << '\n';
+                    }
+                    require(restored, "serial rendering restores the caller's font state");
                     painter.end();
                     return image;
                 };

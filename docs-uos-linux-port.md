@@ -7642,6 +7642,39 @@ reconfigure only its glyph"）。
 两个独立根因：worker 线程重建字形缓存时与 GUI 线程的字体数据库状态不一致；以及"替换文本时只重配字形、
 丢弃缓存像素"这条路径在 Linux 字体回退链下没被走到。
 
+先厘清一件事：`snow-canvas-text-draft-tests`、`snow-canvas-serial-number-render-tests`、
+`snow-canvas-text-render-cache-tests` 是**同一个 exe 的三个 `add_test` 变体**
+（`--serial-number-only` / `--text-render-cache-only` / 无参数），修好一个 exe 一次能消三条。
+
+已经修掉的是序号模式那条 `serial rendering restores the caller's font state`：
+
+```
+FONT_PROBE base=Helvetica,12,-1,5,75,1,0,0,0,0 got=Helvetica,12,-1,5,75,1,0,0,0,0
+FONT_KEY equal=1  base=Helvetica,12,-1,5,75,1,0,0,0,0 got=…
+```
+
+`toString()` 一模一样、`QFont::key()`（Qt 自己用来当字体缓存键的表示）也一模一样，
+**只有 `operator==` 说不同**。原因是 Qt5 的 `QPainter::setFont()` 会把传入的字体解析进绘图设备的默认字体，
+并丢掉 resolve mask；resolve mask 不在 `key()` 里，但参与 `operator==`。
+Qt6 改成惰性解析，所以同一个断言在 Qt6 上成立、在 Qt5 上永远不成立。
+
+断言改成"渲染意义上的同一个字体"——Qt5 比 `key()`，Qt6 保留精确 `==`：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+                    const bool restored = painter.font() == baseFont;
+#else
+                    const bool restored = painter.font().key() == baseFont.key();
+#endif
+```
+
+这条和 9.7.1 的 `snow-canvas-image-tests` 是同一类：**断言写的是 Qt6 的契约，Qt5 上永远不可能成立**。
+判据也统一了——先问"这个断言在 Qt6 上是否只是恰好成立"，再问"产品是否真的没还原"。
+
+剩下两个模式（882 px 的 worker / GUI 线程字形缓存不一致、以及 3 个 `*canvas-renderer` 的
+"streaming replacement must reconfigure only its glyph"）还没动，本机环境缺字体目录
+（`QFontDatabase: Cannot find font directory`）时会先崩，抓不到有效判据，得先给夹具装测试字体。
+
 #### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
 
 `snow-shot-system-tray-controller-tests`、`snow-shot-recording-export-tray-tests`（日志里有
