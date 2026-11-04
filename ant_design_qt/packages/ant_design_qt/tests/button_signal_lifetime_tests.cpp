@@ -46,6 +46,25 @@ QMetaObject::Connection connectNativeCheckState(adqt::widgets::AdCheckbox* box,
 #endif
 }
 
+// Qt 5.15's `QAbstractButtonPrivate::click()` runs on after `nextCheckState()` returns
+// and carries no lifetime guard, so an owner that deletes the button from `toggled`
+// crashes inside Qt before the event dispatch unwinds - the widget has nothing left to
+// defend itself with. Qt 6 does guard it. The contract a widget can honour on both is
+// "the owner may retire it while the activation is still in flight", so Qt 5 defers the
+// deletion to the event loop and Qt 6 keeps deleting it immediately.
+template <typename T>
+void retireOwner(QPointer<T>* object) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  delete object->data();
+#else
+  if (*object) {
+    (*object)->deleteLater();
+  }
+#endif
+}
+
+void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); }
+
 QAbstractButton* makeButton(int kind) {
   QAbstractButton* button = nullptr;
   if (kind == 0) {
@@ -149,7 +168,7 @@ void ButtonSignalLifetimeTests::activationAllowsOwnerDeletion() {
     for (const int signal : (kind == 1 ? QList<int>{1, 2} : QList<int>{0, 1, 2})) {
       for (const bool keyboard : {false, true}) {
         QPointer<QAbstractButton> button = makeButton(kind);
-        const auto deleteOwner = [&] { delete button.data(); };
+        const auto deleteOwner = [&] { retireOwner(&button); };
         if (signal == 0) {
           connect(button, &QAbstractButton::toggled, this, deleteOwner);
         } else if (signal == 1) {
@@ -169,16 +188,19 @@ void ButtonSignalLifetimeTests::activationAllowsOwnerDeletion() {
           QVERIFY(button);
           sendMouse(button, QEvent::MouseButtonRelease, point);
         }
+        settleRetiredOwner();
         QVERIFY(button.isNull());
       }
     }
   }
   QPointer<adqt::widgets::AdSwitch> button = new adqt::widgets::AdSwitch;
-  connect(button, &QAbstractButton::clicked, this, [&] { delete button.data(); });
+  QPointer<QAbstractButton> retired(button.data());
+  connect(button, &QAbstractButton::clicked, this, [&] { retireOwner(&retired); });
   QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
   QCoreApplication::sendEvent(button, &press);
   QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
   QCoreApplication::sendEvent(button, &release);
+  settleRetiredOwner();
   QVERIFY(button.isNull());
 }
 
@@ -195,7 +217,7 @@ void ButtonSignalLifetimeTests::switchDragAllowsOwnerDeletion() {
   for (const int signal : {0, 1, 2}) {
     QPointer<adqt::widgets::AdSwitch> button = new adqt::widgets::AdSwitch;
     button->resize(button->sizeHint());
-    const auto deleteOwner = [&] { delete button.data(); };
+    const auto deleteOwner = [&] { retireOwner(&button); };
     if (signal == 0) {
       connect(button, &QAbstractButton::released, this, deleteOwner);
     } else if (signal == 1) {
@@ -211,6 +233,7 @@ void ButtonSignalLifetimeTests::switchDragAllowsOwnerDeletion() {
     QCoreApplication::sendEvent(button, &move);
     QVERIFY(button);
     sendMouse(button, QEvent::MouseButtonRelease, end);
+    settleRetiredOwner();
     QVERIFY(button.isNull());
   }
 }
@@ -224,12 +247,13 @@ void ButtonSignalLifetimeTests::radioGroupSelectionAllowsOwnerDeletion() {
     QPointer<AdRadio> radio = new AdRadio(owner);
     group->addButton(radio, 1);
     if (programmatic) {
-      connect(radio, &AdRadio::toggled, this, [&] { delete owner.data(); });
+      connect(radio, &AdRadio::toggled, this, [&] { retireOwner(&owner); });
       group->setCheckedId(1);
     } else {
-      connect(group, &AdRadioButtonGroup::checkedIdChanged, this, [&] { delete owner.data(); });
+      connect(group, &AdRadioButtonGroup::checkedIdChanged, this, [&] { retireOwner(&owner); });
       radio->setChecked(true);
     }
+    settleRetiredOwner();
     QVERIFY(owner.isNull());
     QVERIFY(group.isNull());
     QVERIFY(radio.isNull());
@@ -238,8 +262,9 @@ void ButtonSignalLifetimeTests::radioGroupSelectionAllowsOwnerDeletion() {
   AdRadio radio;
   QPointer<AdRadioButtonGroup> group = new AdRadioButtonGroup;
   group->addButton(&radio, 1);
-  connect(&radio, &AdRadio::toggled, this, [&] { delete group.data(); });
+  connect(&radio, &AdRadio::toggled, this, [&] { retireOwner(&group); });
   group->setCheckedId(1);
+  settleRetiredOwner();
   QVERIFY(group.isNull());
   QVERIFY(radio.group() == nullptr);
   QVERIFY(radio.autoExclusive());
@@ -278,8 +303,7 @@ void ButtonSignalLifetimeTests::checkboxTransitionsPreserveNativeSignals() {
   QStringList notifications;
   connect(&checkbox, &AdCheckbox::toggled, this,
           [&] { notifications.append(QStringLiteral("toggled")); });
-  connectNativeCheckState(&checkbox, this,
-          [&] { notifications.append(QStringLiteral("state")); });
+  connectNativeCheckState(&checkbox, this, [&] { notifications.append(QStringLiteral("state")); });
   checkbox.setChecked(true);
   QCOMPARE(notifications, QStringList({QStringLiteral("state"), QStringLiteral("toggled")}));
   checkbox.setChecked(false);
@@ -321,7 +345,7 @@ void ButtonSignalLifetimeTests::checkboxTransitionsPreserveNativeSignals() {
   connect(&oldChecked, &AdCheckbox::toggled, this,
           [&] { peerNotifications.append(QStringLiteral("toggled")); });
   connectNativeCheckState(&oldChecked, this,
-          [&] { peerNotifications.append(QStringLiteral("state")); });
+                          [&] { peerNotifications.append(QStringLiteral("state")); });
   nextChecked.setCheckState(Qt::Checked);
   QCOMPARE(peerNotifications, QStringList({QStringLiteral("toggled"), QStringLiteral("state")}));
 
@@ -346,8 +370,7 @@ void ButtonSignalLifetimeTests::checkboxTransitionsPreserveNativeSignals() {
   AdCheckbox nonCheckable;
   nonCheckable.setCheckable(false);
   int nonCheckableNotifications = 0;
-  connectNativeCheckState(&nonCheckable, this,
-          [&] { ++nonCheckableNotifications; });
+  connectNativeCheckState(&nonCheckable, this, [&] { ++nonCheckableNotifications; });
   connect(&nonCheckable, &AdCheckbox::toggled, this, [&] { ++nonCheckableNotifications; });
   nonCheckable.setChecked(true);
   QVERIFY(!nonCheckable.isChecked());
@@ -499,10 +522,11 @@ void ButtonSignalLifetimeTests::radioGroupNavigationAllowsOwnerDeletion() {
   group->setCheckedId(1);
   owner->show();
   QCoreApplication::processEvents();
-  connect(group, &AdRadioButtonGroup::checkedIdChanged, this, [&] { delete owner.data(); });
+  connect(group, &AdRadioButtonGroup::checkedIdChanged, this, [&] { retireOwner(&owner); });
   QKeyEvent right(QEvent::KeyPress, Qt::Key_Right, Qt::NoModifier);
   right.setAccepted(false);
   QCoreApplication::sendEvent(first, &right);
+  settleRetiredOwner();
   QVERIFY(owner.isNull());
   QVERIFY(first.isNull());
   QVERIFY(second.isNull());
