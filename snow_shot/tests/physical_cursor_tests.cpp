@@ -93,29 +93,52 @@ void silentWarpsDeliverMovementThroughQt() {
     };
     auto cursor = makeCursor();
     const auto hover = cursor.moveOnePixel(PhysicalCursorDirection::Right);
-    require(hover.mouseMoveDispatched && surface.moves == 1 &&
-                surface.lastPosition == QPointF(20.5, 30) &&
-                surface.lastGlobalPosition == desktop && surface.lastButtons == Qt::NoButton,
+    const QPointF expectedLocal = deliveredMousePosition(QPointF(20.5, 30));
+    const QPointF expectedGlobal = deliveredMousePosition(desktop);
+    const bool hoverMatches =
+        hover.mouseMoveDispatched && surface.moves == 1 && surface.lastPosition == expectedLocal &&
+        surface.lastGlobalPosition == expectedGlobal && surface.lastButtons == Qt::NoButton;
+    if (!hoverMatches) {
+        std::cerr << "hover mismatch: dispatched=" << hover.mouseMoveDispatched
+                  << " moves=" << surface.moves << " local=" << surface.lastPosition.x() << ","
+                  << surface.lastPosition.y() << " (want " << expectedLocal.x() << ","
+                  << expectedLocal.y() << ") global=" << surface.lastGlobalPosition.x() << ","
+                  << surface.lastGlobalPosition.y() << " (want " << expectedGlobal.x() << ","
+                  << expectedGlobal.y() << ")\n";
+    }
+    require(hoverMatches,
             "a silent Retina warp must deliver fractional hover movement to the child");
 
-    const QPointF pressLocal =
-        window.windowHandle()->mapFromGlobal(snowWidgetPosition(desktop));
+    const QPointF pressLocal = window.windowHandle()->mapFromGlobal(snowWidgetPosition(desktop));
     QMouseEvent press(QEvent::MouseButtonPress, pressLocal, pressLocal, desktop, Qt::LeftButton,
                       Qt::LeftButton, Qt::ShiftModifier);
     QCoreApplication::sendEvent(window.windowHandle(), &press);
     require(QGuiApplication::mouseButtons().testFlag(Qt::LeftButton),
             "the drag fixture must retain Qt's pressed mouse button");
     const auto drag = cursor.moveOnePixel(PhysicalCursorDirection::Down);
-    require(drag.mouseMoveDispatched && surface.moves == 2 &&
-                surface.lastButtons.testFlag(Qt::LeftButton) &&
-                surface.lastModifiers == Qt::ShiftModifier &&
-                surface.selection == QRectF(QPointF(20.5, 30), QPointF(20.5, 30.5)),
-            "keyboard cursor movement must update the pressed child's selection drag");
+    // The anchor came from the press event, so it is already folded; the moving
+    // corner is folded here for the same reason as the hover above.
+    const QRectF expectedDrag =
+        QRectF(expectedLocal, deliveredMousePosition(QPointF(20.5, 30.5))).normalized();
+    const bool dragMatches = drag.mouseMoveDispatched && surface.moves == 2 &&
+                             surface.lastButtons.testFlag(Qt::LeftButton) &&
+                             surface.lastModifiers == Qt::ShiftModifier &&
+                             surface.selection == expectedDrag;
+    if (!dragMatches) {
+        std::cerr << "drag mismatch: dispatched=" << drag.mouseMoveDispatched
+                  << " moves=" << surface.moves << " selection=" << surface.selection.left() << ","
+                  << surface.selection.top() << " " << surface.selection.width() << "x"
+                  << surface.selection.height() << " (want " << expectedDrag.left() << ","
+                  << expectedDrag.top() << " " << expectedDrag.width() << "x"
+                  << expectedDrag.height() << ")\n";
+    }
+    require(dragMatches, "keyboard cursor movement must update the pressed child's selection drag");
     // Move the live cursor over a sibling while the original surface owns the press.
     desktop = sibling.mapToGlobal(snowWidgetPosition(QPointF(20, 30)));
     pixels = (desktop * 2).toPoint();
     static_cast<void>(cursor.moveOnePixel(PhysicalCursorDirection::Right));
-    require(surface.moves == 3 && sibling.moves == 0 && surface.lastGlobalPosition == desktop,
+    require(surface.moves == 3 && sibling.moves == 0 &&
+                surface.lastGlobalPosition == deliveredMousePosition(desktop),
             "cursor movement must preserve Qt's implicit grab across child boundaries");
     QWidget otherWindow;
     otherWindow.setGeometry(400, 100, 140, 140);
@@ -127,10 +150,10 @@ void silentWarpsDeliverMovementThroughQt() {
     desktop = otherSurface.mapToGlobal(snowWidgetPosition(QPointF(20, 30)));
     pixels = (desktop * 2).toPoint();
     static_cast<void>(cursor.moveOnePixel(PhysicalCursorDirection::Right));
-    require(surface.moves == 4 && otherSurface.moves == 0 && surface.lastGlobalPosition == desktop,
+    require(surface.moves == 4 && otherSurface.moves == 0 &&
+                surface.lastGlobalPosition == deliveredMousePosition(desktop),
             "a keyboard-driven drag must remain with its owner across top-level windows");
-    const QPointF releaseLocal =
-        window.windowHandle()->mapFromGlobal(snowWidgetPosition(desktop));
+    const QPointF releaseLocal = window.windowHandle()->mapFromGlobal(snowWidgetPosition(desktop));
     QMouseEvent release(QEvent::MouseButtonRelease, releaseLocal, releaseLocal, desktop,
                         Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
     QCoreApplication::sendEvent(window.windowHandle(), &release);
@@ -172,14 +195,16 @@ void warpsKeepNativePointerStateSynchronized() {
                              [&] { return std::optional<QPointF>(QPointF(pixels) / 2); }, false});
     const int before = surface.moves;
     static_cast<void>(cursor.moveOnePixel(PhysicalCursorDirection::Right));
-    require(surface.moves == before + 1 && surface.lastGlobalPosition == original + QPointF(.5, 0),
+    require(surface.moves == before + 1 &&
+                surface.lastGlobalPosition == deliveredMousePosition(original + QPointF(.5, 0)),
             "the silent warp must advance the pointer by one physical Retina pixel");
     nativeMove(original);
     require(surface.moves == before + 2 && surface.lastGlobalPosition == original,
             "the next real movement back to the pre-warp position must not be discarded");
     surface.grabMouse();
     static_cast<void>(cursor.moveOnePixel(PhysicalCursorDirection::Down));
-    require(surface.moves == before + 3 && surface.lastGlobalPosition == QPointF(pixels) / 2,
+    require(surface.moves == before + 3 &&
+                surface.lastGlobalPosition == deliveredMousePosition(QPointF(pixels) / 2),
             "an explicit mouse grab must receive keyboard cursor movement");
     surface.releaseMouse();
 }

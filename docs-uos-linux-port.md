@@ -7604,8 +7604,71 @@ job id 从 `gh-ci.py jobs <run-id>` 的 `== [<id>] <name>:` 行取。
 
 `snow-shot-physical-cursor-tests`（fractional hover）、`snow-shot-toolbar-guide-hover-tests`（global coordinates）、
 `snow-shot-screenshot-selection-toolbar-hover-tests`、`snow-shot-export-dialog-placement-tests`。
-共性是**合成事件在 offscreen 与 Windows 上的坐标口径不同**（§9.6 里已记过
-窗口级投递被 `QWidgetWindow` 四舍五入成整数）。这批要么改成直投 widget，要么显式按平台分叉。
+四条**根因各不相同**，全都在本机 Windows + offscreen 上复现（开着 `QT_QPA_FONTDIR=C:/Windows/Fonts`
+才跑得动，否则 offscreen 的字体库是空的，测试在字体断言上先倒）。
+
+**(1) 半像素悬停：Qt5 在窗口级投递时把它折成整数。** `physical_cursor_tests` 的 Retina 场景里，光标
+"移动一个物理像素" = 逻辑坐标 0.5 px，期望子控件收到 `QPointF(20.5, 30)`。实测：
+
+```
+hover mismatch: dispatched=1 moves=1 local=21,30 (want 20.5,30) global=131,140 (want 130.5,140)
+```
+
+事件确实投递到了（`dispatched=1 moves=1`），只是 `QWidgetWindow::handleMouseEvent` 用
+`QMouseEvent::globalPos()`（Qt5 里是整数 `QPoint`）反算控件局部坐标，小数部分就此丢失；Qt6 全程保留。
+于是夹具加了一个显式折叠函数，把"请求的位置"折成"当前 Qt 版本真正能投递的位置"：
+
+```cpp
+[[nodiscard]] inline QPointF deliveredMousePosition(const QPointF& requested) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    return requested;
+#else
+    return QPointF(std::round(requested.x()), std::round(requested.y()));
+#endif
+}
+```
+
+（放在 `synthetic_mouse_test_support.h`，因为它是"合成事件的投递语义"这一层的事。）
+断言仍然查"事件到了、按钮状态对、拖拽矩形对"，只是不要求 Qt5 做到它做不到的半像素。
+
+**(2) 工具栏引导线：基准量取错了对象。** `toolbar-guide-hover` 原来拿
+`receiver->mapToGlobal(local)` 当期望值，而产品转发的其实是**它收到的那次事件的全局坐标**。
+普通 `QWidget` 不处理鼠标移动时 Qt 会把事件**转发给父控件并重算坐标**，所以"产品看到的事件"跟
+"夹具请求的事件"不是同一个：
+
+```
+guide trace: raw=241,314 floored=241,314      <- 夹具发出的那次
+guide trace: raw=242,315 floored=242,315      <- Qt 转发给父控件的那次（+1,+1）
+guide mismatch: forwarded=242,315 expected=241,314
+```
+
+修法是不猜：装一个应用级过滤器，把**最后一次真正投递出去的事件**的全局坐标记下来，断言拿它当期望值。
+这既保住了"必须转发事件的全局坐标"这条真契约，又不再把 Qt 的转发算术写进断言。
+
+顺带同一条用例里还有个坑：`sendMove(&child, QPointF(3.8, 3.8))` 想验证"同像素的重复移动不触发重绘"，
+但 Qt5 先把 3.8 折成 4，于是它跟前面的 3.1 落在**不同**像素上，真的该重绘。改用 3.4（两版都落在同一像素）。
+
+**(3) 选区工具栏：没有活动窗口就没有焦点。** 失败在
+`queued dropdown dismissal must preserve a newly focused external editor`。诊断：
+
+```
+focus mismatch: focused=null hostActive=0 platform=offscreen
+```
+
+`QApplication::focusWidget()` 只在窗口处于活动状态时才有值。offscreen 平台**从不激活窗口**
+（连 `activateWindow()` 也是空操作），所以这条断言测的是平台，不是产品。两处闸门：
+show 之后先探一次，popup 关闭后再探一次——因为 offscreen 会激活第一个显示的窗口，
+随后原生 popup 抢走激活且永不归还。探不到就打印一行理由并跳过该函数的焦点检查。
+
+**(4) 导出对话框：测试根本没跑在 offscreen 上。** 这条最冤——用例里早就写了
+`if (QApplication::platformName() != "offscreen")` 的守卫，但 `CMakeLists.txt` 里
+`snow-shot-export-dialog-placement-tests` / `-pipeline-tests` 两个变体**漏了**同门 `-workflow-tests`
+有的 `ENVIRONMENT "${_SNOW_SHOT_OFFSCREEN_QPA_ENVIRONMENT}"`。于是 Linux CI 上它们跑在 xcb + 无 WM，
+`raise()` 是空操作，栈序断言必倒；Windows 本机因为手动带 `-platform offscreen` 反而是绿的。
+补上环境后守卫生效。
+
+这四条合起来是同一课的四个面：**"坐标对不上"要先问"期望值是从哪来的"**——是夹具请求的、Qt 转发的、
+还是产品实际看到的。三者在 Qt5/Qt6 上都不一定相同。
 
 `snow-canvas-tablet-input-tests` 原本也被归进这一组，但**它不是坐标问题，也不是 Linux 问题**：
 把断言改成逐项打印期望/实际之后，本机 Windows Qt5 第一次跑就复现了——

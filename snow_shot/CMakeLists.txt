@@ -6089,6 +6089,14 @@ if(SNOW_SHOT_BUILD_TESTS)
         COMMAND snow-shot-export-dialog-workflow-tests --optimized-pipeline)
     add_test(NAME snow-shot-export-dialog-placement-tests
         COMMAND snow-shot-export-dialog-workflow-tests --placement)
+    # Both variants assert native stacking order ("the dialog must remain above
+    # its toolbar after a queued raise"). That needs a window manager, so they
+    # belong under the offscreen platform like their -workflow sibling above;
+    # under xcb with no WM on CI the raise is a no-op and the assertion fails on
+    # Linux only.
+    set_tests_properties(snow-shot-export-dialog-pipeline-tests
+        snow-shot-export-dialog-placement-tests PROPERTIES
+        ENVIRONMENT "${_SNOW_SHOT_OFFSCREEN_QPA_ENVIRONMENT}")
     set_tests_properties(snow-shot-export-dialog-placement-tests PROPERTIES
         TIMEOUT 30
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>"

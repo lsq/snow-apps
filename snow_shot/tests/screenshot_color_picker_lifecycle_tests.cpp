@@ -1096,16 +1096,40 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         toolbar->moveContentTo(QPoint(60, 300));
         coordinator.showToolbar();
         QCoreApplication::processEvents();
-        const auto sendMove = [](QWidget* receiver, const QPointF& local,
-                                 Qt::MouseButtons buttons = Qt::NoButton) {
+        // A plain QWidget ignores a mouse move, so Qt re-delivers it to the parent
+        // with the coordinates remapped for that receiver; the global the product
+        // must forward is the one the last delivered event carries, not the one
+        // this fixture asked for. Recording it keeps the assertion on the contract
+        // ("forward the event's global position") instead of on Qt's propagation
+        // arithmetic, which differs between the two Qt versions.
+        struct DeliveredPointerGlobal : QObject {
+            std::optional<QPointF> last;
+            bool eventFilter(QObject*, QEvent* event) override {
+                if (event->type() == QEvent::MouseMove || event->type() == QEvent::Enter) {
+                    last = snowGlobalPos(event);
+                }
+                return false;
+            }
+        } delivered;
+        qApp->installEventFilter(&delivered);
+        const auto sendMove = [&](QWidget* receiver, const QPointF& local,
+                                  Qt::MouseButtons buttons = Qt::NoButton) {
+            delivered.last.reset();
             const QPointF global = receiver->mapToGlobal(snowWidgetPosition(local));
             QMouseEvent event(QEvent::MouseMove, local,
                               receiver->window()->mapFromGlobal(snowWidgetPosition(global)), global,
                               Qt::NoButton, buttons, Qt::NoModifier);
             QApplication::sendEvent(receiver, &event);
         };
-        const auto requireGuideAt = [&](QWidget* receiver, const QPoint& local) {
-            const QPoint global = receiver->mapToGlobal(local);
+        const auto requireGuideAt = [&]() {
+            require(delivered.last.has_value(),
+                    "the guide fixture must observe a delivered pointer position");
+            const QPoint global(qFloor(delivered.last->x()), qFloor(delivered.last->y()));
+            if (commands.guideLinePosition != global) {
+                std::cerr << "guide mismatch: forwarded=" << commands.guideLinePosition.x() << ","
+                          << commands.guideLinePosition.y() << " expected=" << global.x() << ","
+                          << global.y() << '\n';
+            }
             require(commands.guideLinePosition == global,
                     "toolbar movement must forward the event's global coordinates");
             auto* owner = global.x() < 0 ? &first : &second;
@@ -1143,7 +1167,7 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         sendMove(&child, QPointF(3.1, 3.1));
         require(commands.guideLineUpdateCommands > beforeMove,
                 "moving over a non-tracking toolbar child must update screenshot guides");
-        requireGuideAt(&child, QPoint(3, 3));
+        requireGuideAt();
         const auto movementDamage = guideLineRenderDiagnosticsForCurrentThread();
         require(movementDamage.updateRequests == 1 && movementDamage.requestedDamagePixels > 0 &&
                     movementDamage.requestedDamagePixels <
@@ -1151,9 +1175,13 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
                                                  second.canvas()->height() / 10),
                 "toolbar movement must repaint only the changed guide strips once");
         resetGuideLineRenderDiagnosticsForCurrentThread();
-        sendMove(&child, QPointF(3.8, 3.8));
-        sendMove(&child, QPointF(3.8, 3.8));
-        requireGuideAt(&child, QPoint(3, 3));
+        // 3.4 rather than 3.8: both Qt versions must still land in the same
+        // pixel as the 3.1 move above. Qt 5 folds the requested local position
+        // to an integer before the event is built, so 3.8 would become 4 and
+        // step to the next pixel -- a real move, not the no-op under test.
+        sendMove(&child, QPointF(3.4, 3.4));
+        sendMove(&child, QPointF(3.4, 3.4));
+        requireGuideAt();
         require(guideLineRenderDiagnosticsForCurrentThread().updateRequests == 0 &&
                     guideLineRenderDiagnosticsForCurrentThread().requestedDamagePixels == 0,
                 "duplicate and same-pixel toolbar movement must not request guide repaints");
@@ -1165,8 +1193,9 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         const QPoint styleLocal = style->rect().center();
         const QPoint styleGlobal = style->mapToGlobal(styleLocal);
         SnowEnterEventInstance enter(styleLocal, style->window()->mapFromGlobal(styleGlobal), styleGlobal);
+        delivered.last.reset();
         QApplication::sendEvent(style, &enter);
-        requireGuideAt(style, styleLocal);
+        requireGuideAt();
 
         auto* popover = trigger ? trigger->findChild<adqt::widgets::AdPopover*>() : nullptr;
         require(popover, "the toolbar guide test requires a drawing group popup");
@@ -1179,7 +1208,7 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         sendMove(content, content->rect().center(), Qt::LeftButton);
         require(delivery.deliveredMoves > 0,
                 "guide forwarding must preserve delivery of pointer events to popup controls");
-        requireGuideAt(content, content->rect().center());
+        requireGuideAt();
         auto* surface = popover->surfaceWidget();
         const int beforeShadow = commands.guideLineUpdateCommands;
         sendMove(surface, QPointF(0, 0));
@@ -1191,7 +1220,7 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         coordinator.showSelectionToolbar();
         auto* selection = coordinator.selectionToolbar();
         sendMove(selection, selection->rect().center());
-        requireGuideAt(selection, selection->rect().center());
+        requireGuideAt();
         coordinator.hideToolbar();
         const int beforeHidden = commands.guideLineUpdateCommands;
         sendMove(&child, QPointF(6, 6));
@@ -1206,7 +1235,7 @@ void toolbarHoverKeepsScreenshotGuidesResponsive() {
         require(coordinator.screenshotUiContainsGlobalPoint(child.mapToGlobal(QPoint(7, 7))),
                 "the reused child must occupy interactive drawing toolbar content");
         sendMove(&child, QPointF(7.8, 7.8));
-        requireGuideAt(&child, QPoint(7, 7));
+        requireGuideAt();
         const int beforeCanvas = commands.guideLineUpdateCommands;
         sendMove(first.canvas(), QPointF(20, 20));
         require(commands.guideLineUpdateCommands == beforeCanvas,
