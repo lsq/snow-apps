@@ -7782,19 +7782,185 @@ worker 只在 `changed.wait()` 之后读 `oracle`，promise 自己提供 happens
 本机（Windows + offscreen + 已装字体）改前改后 `thread-fontdb` 都是绿的，所以这一格只能靠 CI 判决——
 这也正是把 `gui-shift-across-reset` 写进消息的原因：下一次 run 无论红绿都能定性。
 
-剩下 3 个 `*canvas-renderer` 的 "streaming replacement must reconfigure only its glyph" 还没动。
+剩下 3 个 `*canvas-renderer`（`-canvas-renderer` / `-ocr-canvas-renderer` / `-ocr-line-box-rendering`）
+报的是同一句话 `a streaming replacement must reconfigure only its glyph and discard its cached
+pixels before painting`——**三个 ctest 条目共用一个 exe**（`snow-shot-screenshot-canvas-renderer-tests`
+加不同参数），所以只是同一个断言红了三次。本机 Windows + offscreen 全绿，属于真·Linux 差异，
+但原来那句断言把三件事压在一起：
+
+```cpp
+require(geometrySync == textGeometry + 1 &&
+            glyphBuilds == textBuilds &&
+            glyphBytes < textBytes, "a streaming replacement must …");
+```
+
+红的时候没有任何信息能区分"几何没同步"、"重建了字形"、"缓存没被丢弃"。先拆成三条，并在失败时打数值：
+
+```cpp
+        if (geometryAfterReplacement != textGeometry + 1 || …) {
+            std::cerr << "streaming replacement: geometry " << textGeometry << "->"
+                      << geometryAfterReplacement << " builds " << textBuilds << "->"
+                      << buildsAfterReplacement << " glyph-bytes " << textBytes << "->"
+                      << bytesAfterReplacement << " direct-paints "
+                      << layer.glyphDirectPaintCount() << '\n';
+        }
+```
+
+`direct-paints` 是关键旁证：`glyphRasterBytes() < textBytes` 这条的**前提是这一行本来有缓存**。
+一行若在 Linux 上走了直绘（带分数 DPR、或光栅超过缓存阈值），它从来没进过缓存，
+`updateLineText()` 自然也没有像素可丢，于是字节数**相减为零**——这时断言红的是前提，不是产品。
+一次 CI run 打出 `direct-paints` 与两个字节数就能定性，别再盲改。
+
+**本机验证不到的两条，记在这里免得下次重复踩**：`snow-shot-scrolling-capture-settings-tests` 与
+`snow-shot-screen-recording-controller-tests` 在本机 **Windows 上根本链接不通过**，且**早于本轮修改**
+（`build-5tests.log` 里就有）：
+
+```
+snow-shot-scrolling-capture-settings-tests.exe : fatal error LNK1169
+snow-shot-screen-recording-controller-tests.exe : fatal error LNK1120
+snow_shot_settings.lib(unity_1_cxx.cxx.obj) : error LNK2005: … 已在 formfields.cpp.obj 中定义
+windowchrome.cpp.obj : error LNK2005: snowTestFlushWindowComposition 已在 scrolling_capture_settings_tests.cpp.obj 中定义
+```
+
+`snow_shot_settings` 是 unity 构建（`snow_enable_unity_build`，`UNITY_BUILD_BATCH_SIZE 8`），而这两个测试
+又各自单独编译了 `formfields.cpp` / `themecolorscheme.cpp`。MSVC 会把"成员被拉进来 + 同一符号另有一份
+定义"当硬错误，GNU ld 对归档成员宽容，于是 **Linux CI 链接通过、Windows 本机过不了**——
+仓库里没有 Windows 测试工作流，所以一直没人发现。这两条只能由 CI 判决。
 
 #### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
 
-`snow-shot-system-tray-controller-tests`、`snow-shot-recording-export-tray-tests`（日志里有
-`QObject::connect: No such signal QPlatformNativeInterface::systemTrayWindowChanged(QScreen*)`）、
-`snow-shot-direct-capture-native-tests`（"direct capture lost the full desktop snapshot"）、
+属于这一组的六条：`snow-shot-system-tray-controller-tests`、
+`snow-shot-recording-export-tray-tests`、`snow-shot-direct-capture-native-tests`、
 `snow-shot-scrolling-capture-settings-tests`、`snow-shot-recording-capture-exclusion-tests`、
-`adqt-widget-diagnostics-tests`（菜单 model 装载后 `publishedRows=-1`）。
+`adqt-widget-diagnostics-tests`。
 
-判据同 §9.6 里的 offscreen 一条：**能力不存在就 `exit(77)` 交给 ctest 判 Skipped**，不要让"环境没有"表现为"产品坏了"。
+**先修正 §9.6 那条判据**：`exit(77)` 只适用于"环境真的没有这个东西"（多屏、字体目录、托盘宿主）。
+这一组里只有窗口激活/托盘宿主沾边，其余四条的真实原因是**断言把 Windows 当成唯一实现**——
+平台缺一个 API 时产品换了一条**正确的**行为，测试却仍按 Windows 的期望断言。把它们 skip 掉，
+等于把移植里唯一真正需要决策的地方（缺能力时降级成什么）从门禁里删掉。逐条：
 
-其中 `adqt-widget-diagnostics-tests` 单独说清楚，因为它**不是环境问题、也不是 Linux 问题**：
+**（1）托盘通知**——`snow-shot-system-tray-controller-tests` 报
+`a disabled tray must not replace the last balloon with an update notice`，
+`-recording-export-tray-tests` 报 `disabled legacy tray notifications cannot open files`。
+
+产品侧本来就分了平台：`systemtraycontroller.cpp` 里 `showBalloon()` 把"写 `lastBalloon*` 属性"
+这一段包在 `#if !defined(Q_OS_MACOS) && !defined(Q_OS_LINUX)` 内，`activateMessage()` 的
+`if (!enabled) return;` 同样只对 Windows 生效；Linux 走
+`platform::linux::SystemNotificationService`（session bus 上的 `org.freedesktop.Notifications`），
+与托盘图标是否可见无关。测试的 `#else`（Windows）分支却把"托盘关了就该什么都不发生"当成契约，
+于是 Linux 上 `openedPaths` 变成 3 条而不是 2 条。
+
+修法是把 macOS 的语义扩展到 Linux，而不是加 skip：
+
+```cpp
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        require(openedPaths == QStringList{first, second, first, second},
+                "hidden tray icons must not disable new or previously delivered native actions");
+#else
+        require(openedPaths.size() == 2, "disabled legacy tray notifications cannot open files");
+#endif
+```
+
+两个服务在各自命名空间里，用别名抹平：`using NotificationService = platform::macos::…` /
+`platform::linux::…`，`activated(Action::OpenRecording, path)` 签名一致。
+`findChild<NotificationService*>()` 也因此两边通用。
+
+有一处**只留 macOS**：`result.status == Unavailable`。macOS 的测试二进制没有 bundle，
+原生路径必然报不可用；Linux 上"有没有守护进程"是宿主的属性——裸会话报 `Unavailable`、
+桌面会话真投递，两者都是**投递了一次**，所以只计数不校验状态。
+
+计数还不能用单次 `processEvents()`：macOS 的授权结果排队、Linux 走 D-Bus 回包，
+都会晚于 `show()` 返回。加一个自旋到期望值的等待：
+
+```cpp
+        const auto waitForAttempts = [&](int expected) {
+            QElapsedTimer clock;
+            clock.start();
+            while (notificationAttempts < expected && clock.elapsed() < 5000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        };
+```
+
+**（2）直捕**——`snow-shot-direct-capture-native-tests` 报
+`direct capture lost the full desktop snapshot`。
+
+这条不是"环境没桌面"：fixture 是真的，`snow_shot_alias_test_rust_ffi()` 把 C ABI 符号改名成
+`snow_test_*`，`directcapturenative.cpp` 和目标文件一起被改名，桩确实生效。差的是 X11 的三条契约：
+
+1. **窗口没有自己的采集**。`directcapturenative.cpp` 在 `#ifdef Q_OS_LINUX` 里要求
+   `request.windowFrame` 非空，否则直接返回空结果——窗口矩形得随请求传进来（由平台层读）。
+   测试从来没设过它，于是 FocusedWindow 全部空手而归。
+2. **一次性 native 目标只有显示器**。Linux 的 `oneShot` 多一个
+   `target == DirectCaptureTarget::CurrentMonitor` 条件：窗口必须走桌面会话再裁。
+   于是 `sessionCreations / desktopCaptures / targetCaptures` 三个计数器在窗口目标上**角色互换**。
+3. **`admitRaster` 只挂在一次性路径上**。窗口在 Linux 上不经过它，预算用例要改成打显示器，
+   否则 `admissionCalls` 恒 0。
+
+断言改写后的 X11 契约（跨两台 head 的窗口）：
+
+```cpp
+        request.windowFrame = QRect(-1, -1, 2, 2);   // 左右各占一列
+        …
+        require(capturedWindow == 0 &&                              // X11 不传 HWND
+                    frame.physicalBounds == QRect(-1, -1, 2, 2) &&
+                    frame.image.pixelColor(0, 0).red() == 40 &&      // 来自 head A
+                    frame.image.pixelColor(1, 0).red() == 70 &&      // 来自 head B
+                    frame.image.pixelColor(1, 1).alpha() == 255,     // 根窗口无 alpha
+                "window image must be cropped from every captured display");
+```
+
+另外两个 `fail*` 开关语义也跟着变：`failWindow` 在 X11 上没有杠杆（没有原生窗口读要失败），
+要跳过；`failSecondDisplay` 则**反转**——少一台显示器就是半个窗口，必须报失败而不是返回半张图：
+
+```cpp
+            require(!captureDirectTarget(request).isValid(),
+                    "a missing display must fail a cropped window capture");
+```
+
+**（3）滚动截屏设置**——`snow-shot-scrolling-capture-settings-tests` 报
+`initial capture must exclude the interface`。
+
+`excludeScrollingWindowsFromCapture()` 整块被 `#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)`
+包住，Linux 分支只有 `Q_UNUSED(overlay)`，所以 `excludedIds` 恒空、`excludedWindows` 永不入栈。
+用 `constexpr` 把能力写出来，断言两边都保持有意义：
+
+```cpp
+#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
+    constexpr bool kNativeCaptureExclusion = true;
+#else
+    constexpr bool kNativeCaptureExclusion = false;
+#endif
+    require(requests.size() == 1 &&
+                requests.back().excludedIds.isEmpty() == !kNativeCaptureExclusion,
+            "initial capture must exclude the interface wherever that is possible");
+```
+
+重采集处同样加短路，否则 Linux 上 `until()` 会一直等到超时：
+
+```cpp
+        until([&] { return !kNativeCaptureExclusion ||
+                       (captureInterface ? excludedWindows.isEmpty() : !excludedWindows.isEmpty()); },
+              "recapture must also reapply the native window sharing policy");
+```
+
+**（4）录制排除**——`snow-shot-recording-capture-exclusion-tests` 报
+`unavailable native exclusion keeps drawing popup hidden; capture-on shows it`。
+
+`guardToolbarSurface()` 的 Linux 分支是 `Q_UNUSED(surface)` 后返回 `true`：
+没有 API 可调**不等于**调用失败，把弹窗藏起来只会白白拿走用户一个控件；
+代价是工具栏进画面，这条降级已在 §6 与附录 C 记录。所以断言应为"恒可见"：
+
+```cpp
+#else
+                require(drawingPopover->surfaceWidget()->isVisible(),
+                        "a platform without native exclusion must not hide the drawing popup");
+#endif
+```
+
+注意 Windows/offscreen 那半边的语义恰恰相反（排除失败 → 藏起来，别让弹窗漏进录制），
+两边都留，别合成一个断言。
+
+**（5）`adqt-widget-diagnostics-tests`** 单独说清楚，因为它**不是环境问题、也不是 Linux 问题**：
 本机 Windows Qt5 一样红，报的是
 
 ```

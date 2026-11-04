@@ -246,6 +246,15 @@ void changedSettingsRecapture(ScreenshotScrollingRecognitionMode mode, bool auto
     using namespace adqt::widgets;
     const snow_shot::storage::ScreenshotSettings settings;
     require(settings.setCaptureUiInScrollingScreenshot(false), "seed excluded capture UI");
+    // Hiding a window from a capture is a native capability: Windows has
+    // WDA_EXCLUDEFROMCAPTURE, macOS has SCContentFilter, X11 and Wayland have
+    // neither. Without one the overlay and toolbar simply appear in the frames,
+    // and no exclusion id can be named.
+#if defined(Q_OS_WIN) || defined(_WIN32) || defined(Q_OS_MACOS)
+    constexpr bool kNativeCaptureExclusion = true;
+#else
+    constexpr bool kNativeCaptureExclusion = false;
+#endif
     requests.clear();
     OverlayEvents events;
     SnowCanvasRuntime runtime;
@@ -291,8 +300,9 @@ void changedSettingsRecapture(ScreenshotScrollingRecognitionMode mode, bool auto
     coordinator.showToolbar();
     QCoreApplication::processEvents();
     until([] { return liveSources == 1; });
-    require(requests.size() == 1 && !requests.back().excludedIds.isEmpty(),
-            "initial capture must exclude the interface");
+    require(requests.size() == 1 &&
+                requests.back().excludedIds.isEmpty() == !kNativeCaptureExclusion,
+            "initial capture must exclude the interface wherever that is possible");
     const auto initialIds = requests.back().excludedIds;
     QImage frame(selection.size(), QImage::Format_RGBA8888);
     frame.fill(Qt::red);
@@ -351,7 +361,8 @@ void changedSettingsRecapture(ScreenshotScrollingRecognitionMode mode, bool auto
         // Retired workers retain sharing exclusions until native teardown completes.
         until(
             [&] {
-                return captureInterface ? excludedWindows.isEmpty() : !excludedWindows.isEmpty();
+                return !kNativeCaptureExclusion ||
+                       (captureInterface ? excludedWindows.isEmpty() : !excludedWindows.isEmpty());
             },
             "recapture must also reapply the native window sharing policy");
         frame.fill(captureInterface ? Qt::blue : Qt::green);

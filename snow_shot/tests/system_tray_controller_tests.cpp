@@ -23,6 +23,7 @@
 #include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileDevice>
 #include <QFileInfo>
@@ -52,6 +53,8 @@
 #ifdef Q_OS_MACOS
 #include "systemnotificationservice.h"
 int runNativeSystemTrayMenuTests(snow_shot::presentation::SystemTrayController& controller);
+#elif defined(Q_OS_LINUX)
+#include "snow_shot/platform/linux/systemnotificationservice.h"
 #endif
 
 namespace {
@@ -770,24 +773,47 @@ int main(int argc, char* argv[]) {
     if (application.arguments().contains(QStringLiteral("--recording-export-only"))) {
         using snow_shot::presentation::SystemTrayController;
         using Action = snow_shot::platform::SystemNotificationAction;
-#ifdef Q_OS_MACOS
-        using snow_shot::platform::macos::SystemNotificationService;
-        auto* notifications = controller.findChild<SystemNotificationService*>();
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        // Only Windows raises these balloons through the tray, so only there does
+        // the tray switch govern them. macOS and Linux hand the notification to a
+        // platform service whose lifetime and payload are independent of the icon.
+#if defined(Q_OS_MACOS)
+        using NotificationService = snow_shot::platform::macos::SystemNotificationService;
+#else
+        using NotificationService = snow_shot::platform::linux::SystemNotificationService;
+#endif
+        auto* notifications = controller.findChild<NotificationService*>();
         require(notifications != nullptr,
-                "macOS export notifications must use the authorized UserNotifications backend");
+                "these notifications must use the platform service, not the tray icon");
         int notificationAttempts = 0;
         QVector<snow_shot::platform::SystemNotificationRequest> attemptedRequests;
         QObject::connect(
             &controller, &SystemTrayController::notificationDeliveryFinished, &controller,
             [&](const snow_shot::platform::SystemNotificationRequest& request,
                 const snow_shot::platform::SystemNotificationResult& result) {
+#if defined(Q_OS_MACOS)
                 require(
                     result.status ==
                         snow_shot::platform::SystemNotificationResult::Status::Unavailable,
                     "an unbundled fixture must report unavailable delivery without native calls");
+#else
+                // Whether a daemon answers is a property of the host, not of the
+                // controller: a bare session reports Unavailable, a desktop session
+                // delivers. Both are a delivery, so only count it.
+                Q_UNUSED(result)
+#endif
                 ++notificationAttempts;
                 attemptedRequests.append(request);
             });
+        // Completion arrives on the native service's own schedule - macOS queues
+        // the authorization result, Linux answers through the D-Bus reply - so a
+        // single processEvents pass would race the count below.
+        const auto waitForAttempts = [&](int expected) {
+            QElapsedTimer clock;
+            clock.start();
+            while (notificationAttempts < expected && clock.elapsed() < 5000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        };
 #endif
         QStringList openedPaths;
         int aboutRequests = 0;
@@ -801,7 +827,8 @@ int main(int argc, char* argv[]) {
             storageDirectory.filePath(QStringLiteral("Video exports/second clip.mp4"));
         controller.showRecordingExportMessage(first);
         QCoreApplication::processEvents();
-#ifdef Q_OS_MACOS
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        waitForAttempts(1);
         require(notificationAttempts == 1,
                 "recording completion must reach the native notification delivery service");
 #endif
@@ -815,10 +842,10 @@ int main(int argc, char* argv[]) {
         clickNotification(controller, trayIcon, Action::OpenRecording, second);
         require(openedPaths == QStringList{first, second},
                 "recording notification clicks must use their own exported file");
-#ifdef Q_OS_MACOS
-        notifications->activated(SystemNotificationService::Action::OpenRecording, first);
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        notifications->activated(NotificationService::Action::OpenRecording, first);
         require(openedPaths == QStringList{first, second, first},
-                "clicking an older macOS notification must open that notification's export");
+                "clicking an older notification must open that notification's export");
         openedPaths.removeLast();
 #endif
         controller.showWarningMessage(QStringLiteral("Warning"),
@@ -830,8 +857,8 @@ int main(int argc, char* argv[]) {
         clickNotification(controller, trayIcon, Action::OpenAbout);
         require(openedPaths.size() == 2 && aboutRequests == 1,
                 "update clicks keep their existing About action");
-#ifdef Q_OS_MACOS
-        QCoreApplication::processEvents();
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        waitForAttempts(4);
         require(notificationAttempts == 4,
                 "recording, warning and update messages must share the native delivery service");
         require(attemptedRequests.at(0).filePath == first &&
@@ -839,22 +866,22 @@ int main(int argc, char* argv[]) {
                     attemptedRequests.at(2).severity ==
                         snow_shot::platform::SystemNotificationSeverity::Warning &&
                     attemptedRequests.at(3).action == Action::OpenAbout,
-                "unavailable results must preserve each notification's content and action");
+                "a delivery must preserve each notification's content and action");
 #endif
         controller.showRecordingExportMessage(second);
         controller.setEnabled(false);
         controller.showRecordingExportMessage(first);
         trayIcon->messageClicked();
-#ifdef Q_OS_MACOS
-        notifications->activated(SystemNotificationService::Action::OpenRecording, first);
-        notifications->activated(SystemNotificationService::Action::OpenRecording, second);
-        QCoreApplication::processEvents();
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+        notifications->activated(NotificationService::Action::OpenRecording, first);
+        notifications->activated(NotificationService::Action::OpenRecording, second);
+        waitForAttempts(6);
         require(notificationAttempts == 6,
-                "macOS notifications must remain independent of tray visibility");
+                "notifications must remain independent of tray visibility");
         require(openedPaths == QStringList{first, second, first, second},
                 "hidden tray icons must not disable new or previously delivered native actions");
         controller.showCaptureMessage(QStringLiteral("Capture failed"), false);
-        QCoreApplication::processEvents();
+        waitForAttempts(7);
         require(notificationAttempts == 7 &&
                     attemptedRequests.last().severity ==
                         snow_shot::platform::SystemNotificationSeverity::Error,
@@ -911,7 +938,10 @@ int main(int argc, char* argv[]) {
                    "a general tray warning must preserve its title and warning severity");
     controller.setEnabled(false);
     controller.showUpdateMessage(QStringLiteral("Update with tray hidden"));
-#ifdef Q_OS_MACOS
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
+    // Same contract as macOS: on Linux the tray menu and the notification are two
+    // separate deliveries, so hiding the tray must not suppress the notification.
+    // showBalloon() gates the balloon properties on `enabled` only on Windows.
     requireBalloon(trayIcon, QStringLiteral("Update"), QStringLiteral("Update with tray hidden"),
                    QSystemTrayIcon::Information,
                    "native notification delivery must remain enabled with the tray hidden");

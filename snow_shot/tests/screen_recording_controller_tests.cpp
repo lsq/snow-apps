@@ -2083,11 +2083,21 @@ void recordingCaptureExclusionWiring() {
                 require(drawingPopover->surfaceWidget() &&
                             requestedSurfaces == (captureToolbar ? 0 : 1),
                         "late drawing popover inherits the recording toolbar capture policy");
+#if !defined(Q_OS_LINUX)
+                // Where a native exclusion exists, one that cannot be applied keeps
+                // the popup out of the recording rather than letting it leak in.
                 if (QGuiApplication::platformName() == QStringLiteral("offscreen")) {
                     require(drawingPopover->surfaceWidget()->isVisible() == captureToolbar,
                             "unavailable native exclusion keeps drawing popup hidden; capture-on "
                             "shows it");
                 }
+#else
+                // X11 has no exclusion API at all: nothing failed, so hiding the
+                // popup would only take a control away from the user - it appears in
+                // the video, which is the degradation the port records.
+                require(drawingPopover->surfaceWidget()->isVisible(),
+                        "a platform without native exclusion must not hide the drawing popup");
+#endif
 #ifdef Q_OS_WIN
                 if (QGuiApplication::platformName() == QStringLiteral("windows")) {
                     DWORD affinity = WDA_NONE;

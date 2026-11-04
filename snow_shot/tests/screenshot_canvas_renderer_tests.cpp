@@ -5157,11 +5157,26 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
         const auto textBytes = layer.glyphRasterBytes();
         presentation->setLineText(1, QStringLiteral("Changed translated text"));
         layer.updateLineText(1);
-        require(layer.geometrySynchronizationCount() == textGeometry + 1 &&
-                    layer.glyphRasterBuildCount() == textBuilds &&
-                    layer.glyphRasterBytes() < textBytes,
-                "a streaming replacement must reconfigure only its glyph and discard its cached "
-                "pixels before painting");
+        // Three separate facts, reported separately: "cached pixels were dropped"
+        // only has a meaning if this line had cached pixels to begin with, and a
+        // platform that direct-paints the line never gives it any.
+        const auto geometryAfterReplacement = layer.geometrySynchronizationCount();
+        const auto buildsAfterReplacement = layer.glyphRasterBuildCount();
+        const auto bytesAfterReplacement = layer.glyphRasterBytes();
+        if (geometryAfterReplacement != textGeometry + 1 ||
+            buildsAfterReplacement != textBuilds || bytesAfterReplacement >= textBytes) {
+            std::cerr << "streaming replacement: geometry " << textGeometry << "->"
+                      << geometryAfterReplacement << " builds " << textBuilds << "->"
+                      << buildsAfterReplacement << " glyph-bytes " << textBytes << "->"
+                      << bytesAfterReplacement << " direct-paints "
+                      << layer.glyphDirectPaintCount() << '\n';
+        }
+        require(geometryAfterReplacement == textGeometry + 1,
+                "a streaming replacement must reconfigure the layer geometry exactly once");
+        require(buildsAfterReplacement == textBuilds,
+                "a streaming replacement must not rebuild any glyph raster");
+        require(bytesAfterReplacement < textBytes,
+                "a streaming replacement must discard its cached pixels before painting");
         compareWithDirect(1.5);
         require(renderOcrSelectionLayer(layer, 1.5) != beforeTextReplacement,
                 "a streaming replacement must display changed glyph pixels even when its new "

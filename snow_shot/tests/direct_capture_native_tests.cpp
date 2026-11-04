@@ -216,6 +216,13 @@ int main() {
         request.historyEnabled = true;
         request.window = 123;
         request.monitorName = QStringLiteral("device-B");
+#if defined(Q_OS_LINUX)
+        // X11 has no window-level read, so the rectangle to cut out travels with
+        // the request. Straddling the two heads is the case that matters: copying
+        // from a single display would return half a window.
+        request.windowFrame = QRect(-1, -1, 2, 2);
+        request.windowLogicalBounds = QRect(-1, -1, 2, 2);
+#endif
         {
             const auto frame = captureDirectTarget(request);
             require(frame.isValid() && frame.displays.size() == 2,
@@ -228,14 +235,31 @@ int main() {
                         frame.displays[1].image.pixelColor(0, 0).red() == 70,
                     "direct capture lost display identity, geometry, or pixels");
             if (target == DirectCaptureTarget::FocusedWindow) {
+#if defined(Q_OS_LINUX)
+                // Each head supplies one column of the window, and a root capture
+                // has no alpha channel to preserve.
+                require(capturedWindow == 0 && frame.physicalBounds == QRect(-1, -1, 2, 2) &&
+                            frame.image.pixelColor(0, 0).red() == 40 &&
+                            frame.image.pixelColor(1, 0).red() == 70 &&
+                            frame.image.pixelColor(1, 1).alpha() == 255,
+                        "window image must be cropped from every captured display");
+                require(frame.identity == QStringLiteral("window:123") &&
+                            frame.backend == SNOW_CAPTURE_BACKEND_X11,
+                        "a cropped window must keep its own identity and backend");
+#else
                 require(capturedWindow == 123 && frame.physicalBounds == QRect(-1, 0, 2, 2) &&
                             frame.image.pixelColor(1, 0).red() == 100,
                         "window image was not captured with the desktop transaction");
+#endif
                 const QImage saved =
                     snow_shot::image_codec::decode(snow_shot::image_codec::encodePng(frame.image),
                                                    snow::image::Format::png, "focused-window.png");
                 require(!saved.isNull(), "focused-window PNG encoding failed");
+#if defined(Q_OS_LINUX)
+                const std::array<int, 4> expectedAlpha{255, 255, 255, 255};
+#else
                 const std::array<int, 4> expectedAlpha{0, 64, 128, 255};
+#endif
                 for (int pixel = 0; pixel < 4; ++pixel) {
                     require(saved.pixelColor(pixel % 2, pixel / 2).alpha() ==
                                 expectedAlpha[static_cast<size_t>(pixel)],
@@ -279,6 +303,13 @@ int main() {
         for (bool* failure : {&failCapture, &failSecondDisplay, &failWindow}) {
             if (failure == &failWindow && target != DirectCaptureTarget::FocusedWindow)
                 continue;
+#if defined(Q_OS_LINUX)
+            // There is no native window read on X11 to fail: the window comes out
+            // of the desktop capture, and `failSecondDisplay` above already covers
+            // the display that would go missing.
+            if (failure == &failWindow)
+                continue;
+#endif
             *failure = true;
             require(!captureDirectTarget(request).isValid(),
                     "partial native transaction was accepted as a successful capture");
@@ -296,23 +327,57 @@ int main() {
         request.historyEnabled = false;
         request.captureCursor = true;
         request.restoreOriginalScreenColors = true;
+#if defined(Q_OS_LINUX)
+        request.windowFrame = QRect(-1, -1, 2, 2);
+        request.windowLogicalBounds = QRect(-1, -1, 2, 2);
+#endif
         const int beforeDesktop = desktopCaptures;
         const int beforeSessionCreations = sessionCreations;
         const int beforeTarget = targetCaptures;
         {
             const auto frame = captureDirectTarget(request);
+#if defined(Q_OS_LINUX)
+            // Only the monitor target is a one-shot native capture on X11; a window
+            // is still cut out of a desktop session, so the counters swap roles.
+            const bool oneShotTarget = target == DirectCaptureTarget::CurrentMonitor;
+            require(frame.isValid() && sessions == 0 && snapshots == 0 &&
+                        (oneShotTarget ? desktopCaptures == beforeDesktop &&
+                                             targetCaptures == beforeTarget + 1 &&
+                                             sessionCreations == beforeSessionCreations
+                                       : desktopCaptures == beforeDesktop + 1 &&
+                                             targetCaptures == beforeTarget &&
+                                             sessionCreations == beforeSessionCreations + 1),
+                    "history-disabled direct capture must acquire only what its target needs");
+#else
             require(frame.isValid() && sessions == 0 && snapshots == 0 &&
                         desktopCaptures == beforeDesktop && targetCaptures == beforeTarget + 1 &&
                         sessionCreations == beforeSessionCreations,
                     "history-disabled direct capture must acquire only the explicit native target");
+#endif
             require((capturedFlags & SNOW_CAPTURE_SCREENSHOT_REQUEST_INCLUDE_CURSOR) &&
                         (capturedFlags & SNOW_CAPTURE_SCREENSHOT_REQUEST_RESTORE_ORIGINAL_COLORS),
                     "target-only capture retains cursor and color policies");
-            require(frame.displays.size() == (target == DirectCaptureTarget::FocusedWindow ? 0 : 1),
+#if defined(Q_OS_LINUX)
+            // A cropped window keeps the displays it was cut from; it has no frame
+            // lease of its own.
+            const auto expectedDisplays =
+                static_cast<size_t>(target == DirectCaptureTarget::FocusedWindow ? 2 : 1);
+#else
+            const auto expectedDisplays =
+                static_cast<size_t>(target == DirectCaptureTarget::FocusedWindow ? 0 : 1);
+#endif
+            require(frame.displays.size() == expectedDisplays,
                     "target-only capture must not retain unrelated display images");
             if (target == DirectCaptureTarget::FocusedWindow)
+#if defined(Q_OS_LINUX)
+                require(frame.image.pixelColor(0, 0).red() == 40 &&
+                            frame.image.pixelColor(1, 0).red() == 70 &&
+                            frame.image.pixelColor(1, 0).alpha() == 255,
+                        "a cropped window must carry the pixels of every display it spans");
+#else
                 require(frame.image.pixelColor(1, 0).alpha() == 64,
                         "target-only window capture preserves native alpha");
+#endif
             else
                 require(frame.displays[0].stableId == QStringLiteral("stable-B") &&
                             frame.image.cacheKey() == frame.displays[0].image.cacheKey(),
@@ -321,13 +386,27 @@ int main() {
         require(leases == 0, "targeted capture leaked frame leases");
         if (target == DirectCaptureTarget::FocusedWindow) {
             failSecondDisplay = true;
+#if defined(Q_OS_LINUX)
+            // The crop needs every display: a head that cannot be read is half a
+            // window, which must be reported rather than returned.
+            require(!captureDirectTarget(request).isValid(),
+                    "a missing display must fail a cropped window capture");
+#else
             require(captureDirectTarget(request).isValid(),
                     "an unrelated display failure must not fail targeted window capture");
+#endif
             failSecondDisplay = false;
         }
     }
     DirectCaptureRequest budgeted;
+#if defined(Q_OS_LINUX)
+    // The monitor target is the only one-shot capture on X11, so it is the only
+    // path that consults the raster budget before allocating.
+    budgeted.target = DirectCaptureTarget::CurrentMonitor;
+    budgeted.monitorName = QStringLiteral("device-B");
+#else
     budgeted.target = DirectCaptureTarget::FocusedWindow;
+#endif
     budgeted.window = 123;
     int admissionCalls = 0;
     budgeted.admitRaster = [&](QSize size) {
