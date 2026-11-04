@@ -67,6 +67,12 @@
 #include <thread>
 #include <vector>
 
+#if defined(Q_OS_WIN)
+#include <windows.h>
+
+#include <cstdio>
+#endif
+
 namespace {
 
 void require(bool condition, const char* message) {
@@ -4820,6 +4826,15 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
     auto ready = workerReady.get_future();
     std::promise<void> fontsChanged;
     auto changed = fontsChanged.get_future();
+    // The rebuild is measured against a GUI render taken *after* the
+    // invalidation, not against the pre-invalidation snapshot. A font database
+    // reset re-resolves every family from scratch -- on a fontconfig host that
+    // re-runs the substitution chain, so one and the same QFont can come back
+    // with a different face or different hinting and every thread's
+    // rasterisation shifts at once. Comparing across that boundary would test
+    // the reset rather than the worker's thread affinity.
+    QImage oracle = expected;
+    qsizetype guiShift = 0;
     // Every part of the worker's verdict is recorded and reported separately:
     // "workerPassed == false" says nothing about *which* of the four
     // observations disagreed, and the four have completely different causes
@@ -4845,10 +4860,10 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
         changed.wait();
         const auto rebuilt = renderTextCacheSample(item, font, 1.0, true, false);
         observed.after = renderCacheDiagnosticsForCurrentThread();
-        observed.rebuiltMatches = rebuilt == expected;
+        observed.rebuiltMatches = rebuilt == oracle;
         if (!observed.rebuiltMatches) {
-            observed.rebuildPixelsDiffering = differingPixelCount(rebuilt, expected);
-            observed.rebuildDelta = describePixelDelta(rebuilt, expected);
+            observed.rebuildPixelsDiffering = differingPixelCount(rebuilt, oracle);
+            observed.rebuildDelta = describePixelDelta(rebuilt, oracle);
         }
         clearRenderCacheForCurrentThread();
     });
@@ -4859,6 +4874,9 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
             "font database invalidation signal must be invokable");
     require(renderCacheDiagnosticsForCurrentThread().entries == 0,
             "font database changes must invalidate GUI layouts");
+    const QImage afterInvalidation = renderTextCacheSample(item, font, 1.0, true, false);
+    guiShift = differingPixelCount(afterInvalidation, expected);
+    oracle = afterInvalidation;
     fontsChanged.set_value();
     worker.join();
     require(observed.coldMatches,
@@ -4869,7 +4887,8 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
             qPrintable(QStringLiteral("a worker rebuild after a font database change must match "
                                       "the GUI thread: %1 px differ in %2,%3 %4x%5 "
                                       "(reference-only=%6 candidate-only=%7 both-inked=%8) "
-                                      "cold=%9 builds=%10 hits=%11 entries=%12")
+                                      "cold=%9 builds=%10 hits=%11 entries=%12 "
+                                      "gui-shift-across-reset=%13")
                            .arg(observed.rebuildPixelsDiffering)
                            .arg(observed.rebuildDelta.bounds.x())
                            .arg(observed.rebuildDelta.bounds.y())
@@ -4881,7 +4900,8 @@ void preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges() {
                            .arg(observed.coldMatches ? 1 : 0)
                            .arg(observed.after.builds)
                            .arg(observed.after.hits)
-                           .arg(observed.after.entries)));
+                           .arg(observed.after.entries)
+                           .arg(guiShift)));
     require(observed.cold.builds == 3 && observed.cold.hits == 0,
             qPrintable(QStringLiteral("the worker's first render must build all three phases: "
                                       "builds=%1 hits=%2 entries=%3")
@@ -5624,11 +5644,40 @@ void runAutomaticTextWrappingTests() {
 
 } // namespace
 
+#if defined(Q_OS_WIN)
+namespace {
+
+// A bare segfault under `-platform offscreen` prints nothing at all here, so a
+// trace run installs a filter that names the faulting module before the process
+// dies. Only needed while diagnosing; gated behind SNOW_TEST_TRACE.
+LONG WINAPI reportFaultingModule(EXCEPTION_POINTERS* info) {
+    const EXCEPTION_RECORD* record = info->ExceptionRecord;
+    HMODULE module = nullptr;
+    ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         reinterpret_cast<LPCWSTR>(record->ExceptionAddress), &module);
+    wchar_t path[MAX_PATH] = {};
+    ::GetModuleFileNameW(module, path, MAX_PATH);
+    std::fprintf(
+        stderr, "CRASH code=0x%08lx offset=0x%llx module=%ls\n",
+        static_cast<unsigned long>(record->ExceptionCode),
+        static_cast<unsigned long long>(reinterpret_cast<quintptr>(record->ExceptionAddress) -
+                                        reinterpret_cast<quintptr>(module)),
+        path);
+    std::fflush(stderr);
+    return EXCEPTION_EXECUTE_HANDLER;
+}
+
+} // namespace
+#endif
+
 int main(int argc, char** argv) {
     QApplication app(argc, argv);
 #if defined(Q_OS_WIN)
     require(QFontDatabase::addApplicationFont(QStringLiteral("C:/Windows/Fonts/segoeui.ttf")) >= 0,
             "the watermark renderer test requires a system TrueType font");
+    if (qEnvironmentVariableIsSet("SNOW_TEST_TRACE"))
+        ::SetUnhandledExceptionFilter(&reportFaultingModule);
 #endif
 
     if (app.arguments().contains(QStringLiteral("--text-wrap-only"))) {
@@ -5653,15 +5702,23 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (app.arguments().contains(QStringLiteral("--text-render-cache-only"))) {
-        preparedTextLayoutsMatchUncachedPixelsAndTrackPaintInputs();
-        preparedTextLayoutsAreBoundedAndReleasedWithRenderingState();
-        preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges();
-        textBackgroundUsesRectangleHatchTexture();
-        textHoverUnderlineRendererDrawsOnlyTheUnderline();
-        textDecorationsFollowAlignedLines();
-        multilineTextHoverRendererDrawsEveryLineUnderline();
-        paintBoundsFollowAlignedWrappedInk();
-        resizedAlignedTextKeepsCaretClickAndSelectionGeometryConsistent();
+        const bool trace = qEnvironmentVariableIsSet("SNOW_TEST_TRACE");
+        auto step = [trace](const char* name, void (*fn)()) {
+            if (trace) {
+                std::fprintf(stderr, "STEP %s\n", name);
+                std::fflush(stderr);
+            }
+            fn();
+        };
+        step("uncached-pixels", &preparedTextLayoutsMatchUncachedPixelsAndTrackPaintInputs);
+        step("bounded-release", &preparedTextLayoutsAreBoundedAndReleasedWithRenderingState);
+        step("thread-fontdb", &preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges);
+        step("background-hatch", &textBackgroundUsesRectangleHatchTexture);
+        step("hover-underline", &textHoverUnderlineRendererDrawsOnlyTheUnderline);
+        step("decorations", &textDecorationsFollowAlignedLines);
+        step("multiline-hover", &multilineTextHoverRendererDrawsEveryLineUnderline);
+        step("paint-bounds", &paintBoundsFollowAlignedWrappedInk);
+        step("caret-geometry", &resizedAlignedTextKeepsCaretClickAndSelectionGeometryConsistent);
         return 0;
     }
     preparedTextLayoutsMatchUncachedPixelsAndTrackPaintInputs();

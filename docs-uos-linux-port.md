@@ -7674,9 +7674,52 @@ Qt6 改成惰性解析，所以同一个断言在 Qt6 上成立、在 Qt5 上永
 这条和 9.7.1 的 `snow-canvas-image-tests` 是同一类：**断言写的是 Qt6 的契约，Qt5 上永远不可能成立**。
 判据也统一了——先问"这个断言在 Qt6 上是否只是恰好成立"，再问"产品是否真的没还原"。
 
-剩下两个模式（882 px 的 worker / GUI 线程字形缓存不一致、以及 3 个 `*canvas-renderer` 的
-"streaming replacement must reconfigure only its glyph"）还没动，本机环境缺字体目录
-（`QFontDatabase: Cannot find font directory`）时会先崩，抓不到有效判据，得先给夹具装测试字体。
+接着是那条 882 px 的 worker / GUI 字形缓存不一致。先要能看见它——本机 `-platform offscreen`
+下这个 exe **一个字都不打就没了**（`QFontDatabase: Cannot find font directory`），连哪一步死的都不知道。
+于是给 `main()` 加了两件 env-gated 的东西（都留在仓库里，因为下次还得用）：
+
+```cpp
+auto step = [trace](const char* name, void (*fn)()) {   // SNOW_TEST_TRACE=1
+    if (trace) { std::fprintf(stderr, "STEP %s\n", name); std::fflush(stderr); }
+    fn();
+};
+```
+
+```cpp
+// SNOW_TEST_TRACE=1 时挂上，崩溃前把出错模块的名字打出来
+::SetUnhandledExceptionFilter(&reportFaultingModule);
+```
+
+第一次跑就得到 `STEP thread-fontdb` → `CRASH module=...\plugins\platforms\qoffscreend.dll`：
+那个 882 px 的用例在本机是**过的**，本机崩溃点落在下一步（`textBackgroundUsesRectangleHatchTexture`），
+而且崩在 **Qt 自己的 offscreen 插件**里（`QBrush` 纹理走 `QPixmap` 转换 → 插件内部 0xc0000005），
+产品代码一行没参与。这条只影响本机 Windows + offscreen 的验证便利性，Linux 的 `qoffscreen.so`
+是另一份实现，所以不加 skip、只记录。
+
+真正的 882 px 是**时间基准问题**，不是产品问题：断言把"字体库变更之后"的 worker 重建，
+拿去和"变更之前"的 GUI 快照比。字体库重置会从零重解析每个字族——在 fontconfig 宿主上等于重跑
+一遍替换链，同一个 `QFont` 可能换个 face 或换套 hinting，**所有线程的光栅化同时平移**。
+跨这个边界比，测的是那次重置，不是线程归属。改成同一世代内比：
+
+```cpp
+QImage oracle = expected;                 // 变更前的快照，只给 cold 那一半用
+...
+require(renderCacheDiagnosticsForCurrentThread().entries == 0,
+        "font database changes must invalidate GUI layouts");
+const QImage afterInvalidation = renderTextCacheSample(item, font, 1.0, true, false);
+guiShift = differingPixelCount(afterInvalidation, expected);   // 失败消息里带上，供判读
+oracle = afterInvalidation;               // 写完再放行 worker
+fontsChanged.set_value();
+```
+
+worker 只在 `changed.wait()` 之后读 `oracle`，promise 自己提供 happens-before，不需要额外同步。
+失败消息多一项 `gui-shift-across-reset=%13`：**它若等于 worker 的差值，就证明重置本身平移了整张图**；
+若为 0 而 worker 仍然差，那才是 worker 侧真有问题（此时该查线程内的字体引擎，而不是夹具）。
+
+本机（Windows + offscreen + 已装字体）改前改后 `thread-fontdb` 都是绿的，所以这一格只能靠 CI 判决——
+这也正是把 `gui-shift-across-reset` 写进消息的原因：下一次 run 无论红绿都能定性。
+
+剩下 3 个 `*canvas-renderer` 的 "streaming replacement must reconfigure only its glyph" 还没动。
 
 #### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
 
