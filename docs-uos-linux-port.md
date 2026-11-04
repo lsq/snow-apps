@@ -7557,6 +7557,40 @@ req = urllib.request.Request(target, headers={"Range": f"bytes={len(collected)}-
 分段拉取做成了独立脚本 `.workbuddy/uos-port/fetch-job-log.py`（用法：`python fetch-job-log.py <job-id> <out>`），
 job id 从 `gh-ci.py jobs <run-id>` 的 `== [<id>] <name>:` 行取。
 
+#### 9.6.66 渲染出来的 HTML 里，§9.7 被追加了 14 份
+
+`docs-uos-linux-port.html` 是给人用浏览器读的副本，由 `.workbuddy/uos-port/sync-port-html.py`
+从 Markdown 增量拼接（它不整篇重渲染，因为样式表、hero、目录都是手写的）。它有一处静默故障：
+
+`SECTIONS` 里列了 `9.7 Linux CI 单元测试残留清单（…）`，而 §9.7 在 Markdown 里位于**文末**
+（追加在附录之后）、在 HTML 里位于第 10 章之前。两条规则同时失效：
+
+1. 通用规则是"替换 anchor 到**下一个同级标题**之间的内容"。`### 9.7` 下面是 `#### 9.7.1`，
+   所以它每次只替换 §9.7 的引导段，`9.7.1`–`9.7.6` 一个字节都没进更新范围；
+2. "已经在了"的判据是 `render()` 出的首行（`<h3>9.7 …</h3>`，**不带 `id`**）是否出现在 HTML 里，
+   而文件里那一行历史上带过 `id`，于是判据永远为假 → 走"新建"分支 → 往 `<h2 id="10-` 前
+   **再插一整份**。
+
+结果：打开浏览器看到同一章重复 **14 次**（`9.7.1`–`9.7.6` 各 14 份、共 3258 行），
+而每次运行都打印 `synced section: 9.7 …`，看起来一切正常。
+
+修法：把它从 `SECTIONS` 挪到新的 `TAIL_SECTIONS`——从该标题一直渲染到下一个 `<h2>`，
+整个块替换；标题匹配用正则容忍有无 `id`。
+
+```python
+first_line = rendered.split("\n", 1)[0]
+pattern = re.escape(first_line).replace(re.escape("<h3>"), r"<h3[^>]*>", 1)
+match = re.search(pattern, html_text)
+following = re.search(r"<h2[ >]", html_text[match.end():])
+```
+
+**判据**：连跑两次必须都是 `nothing to sync`（幂等）。**反向验证**：往 Markdown 的 §9.7 里注入
+一句 `REVERSE-PROBE-MARKER` → 跑一次，HTML 里该标记恰出现 1 次、且 `9.7.5` 仍只 1 份；
+撤掉标记再跑，标记消失。只跑第一次（注入）看不出重复，因为重复是**累积**出来的。
+
+顺带一条通用教训：**「脚本说同步了」不等于「读者看到的是对的」**。这类副本的判据不能只看
+脚本的日志，要落到"同一标题在产物里出现几次"这种可数的量上。
+
 ### 9.7 Linux CI 单元测试残留清单（2026-11-04，56/829）
 
 `962cb5ab` 上 Linux x64 Release 的 `ctest`：**93% passed, 56 failed out of 829**（573 s）。构建、deb、AppImage、
@@ -7916,6 +7950,58 @@ bool sameTileSample(const QColor& left, const QColor& right) {
 实测 Qt 5 交给 `QPaintEvent` 的是更新区域的**包围盒**（一个覆盖两块模糊的矩形），
 不是区域本身；Qt 6 才给精确区域。于是：Qt 6 继续要求 `painted` 与兄弟滤镜区域不相交，
 Qt 5 只断言像素不变，并把理由写进注释——平台看不见的东西不能当断言。
+
+#### 9.7.4c 按钮的「owner 可以在激活进行中退休它」
+
+`adqt-button-signal-lifetime-tests` 本机（Windows + Qt 5.15 + offscreen）直接 `EXIT=139`，
+不用等 CI。四条同时崩：
+
+| 用例 | 触发器 |
+| --- | --- |
+| `activationAllowsOwnerDeletion` | `AdSwitch` + `toggled` |
+| `switchDragAllowsOwnerDeletion` | `released` / `toggled` / `clicked` |
+| `radioGroupSelectionAllowsOwnerDeletion` | `Radio::toggled` 与 `checkedIdChanged` |
+| `radioGroupNavigationAllowsOwnerDeletion` | 方向键改变选中后 `checkedIdChanged` |
+
+**怎么定位的**：先加 `qInfo()` 探针，一个字都没打出来——QTest 的日志通道把输出吞了。
+换成 `std::fprintf(stderr, ...)` + `std::fflush(stderr)` 才看见 `kind=0 signal=0 keyboard=0`，
+再逐用例二分，确认是上面四条而不是整批。
+
+**根因是附录 C.1**：Qt 5.15 的 `QAbstractButtonPrivate::click()` 在 `nextCheckState()` 返回后
+仍在跑（`refresh()` 等），所有者从 `toggled` 里 `delete` 按钮，Qt 内部就去读已释放的私有对象。
+Qt 6 有守卫。**widget 侧没有可防守的位置**——它在 Qt 的私有函数里被删掉的，自己无从插手。
+
+**为什么不用 `#if QT_VERSION` 把用例跳过**：这条用例的名字就是契约本身——
+「owner 可以在激活进行中退休这个 widget」。跳掉等于把契约从门禁里删掉，
+而且 Qt 5 下真实 owner 也常常真这么干。真正能对两版同时兑现的做法是**把删除推迟到事件循环**：
+
+```cpp
+// Qt 5 defers the deletion to the event loop, Qt 6 keeps deleting it immediately.
+template <typename T>
+void retireOwner(QPointer<T>* object) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+  delete object->data();
+#else
+  if (*object) {
+    (*object)->deleteLater();
+  }
+#endif
+}
+
+void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete); }
+```
+
+`settleRetiredOwner()` 必须显式写：§9.6.58 已经记过 `processEvents()` 不排空 `DeferredDelete`，
+这里 `sendMouse()` 内部也没有。
+
+**别顺手给所有用例都补 `settleRetiredOwner()`**：`radioGroupPropertyPropagationAllowsOwnerDeletion`
+走的是 `controlSizeChanged` / `variantChanged` / `componentTokensChanged` 这类**属性**信号，
+不经过 `click()`，立即 `delete` 一直就是安全的（它本来就没红）。加了不但没用，
+还会让人误以为那里也有同样的坑。
+
+**与附录 C.1 里 `adqt-value-widget-lifetime-tests` 的差别**：那一组断言的是「`delete` 必须安全」，
+所以产品侧动过刀（`QSignalBlocker` + `QMetaObject::invokeMethod` 补发）；这一组断言的是
+「owner 可以退休」，两种实现都满足契约，选延迟的那条更贴近真实 owner 的写法。
 
 #### 9.7.5 平台能力缺失（`offscreen` 无托盘 / 无真实桌面）
 
