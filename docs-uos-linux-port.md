@@ -7600,9 +7600,36 @@ req = urllib.request.Request(target, headers={"Range": f"bytes={len(collected)}-
 #### 9.7.3 鼠标 / 悬停坐标（5 条）
 
 `snow-shot-physical-cursor-tests`（fractional hover）、`snow-shot-toolbar-guide-hover-tests`（global coordinates）、
-`snow-shot-screenshot-selection-toolbar-hover-tests`、`snow-shot-export-dialog-placement-tests`、`snow-canvas-tablet-input-tests`
-（subpixel 位置 / 压力归一化）。共性是**合成事件在 offscreen 与 Windows 上的坐标口径不同**（§9.6 里已记过
+`snow-shot-screenshot-selection-toolbar-hover-tests`、`snow-shot-export-dialog-placement-tests`。
+共性是**合成事件在 offscreen 与 Windows 上的坐标口径不同**（§9.6 里已记过
 窗口级投递被 `QWidgetWindow` 四舍五入成整数）。这批要么改成直投 widget，要么显式按平台分叉。
+
+`snow-canvas-tablet-input-tests` 原本也被归进这一组，但**它不是坐标问题，也不是 Linux 问题**：
+把断言改成逐项打印期望/实际之后，本机 Windows Qt5 第一次跑就复现了——
+
+```
+tablet sample mismatch: device=2(want 2) id=2(want 2) has_pressure=0(want 1)
+  timestamp=1234(want 1234) position=20.5,30.25(want 20.5,30.25) pressure=0(want 0)
+```
+
+唯一对不上的是 `has_pressure`。根因在适配器本身：Qt6 用
+`pointingDevice()->capabilities()` 判断压感，Qt5 **没有这个查询通道**，`makePointerInput()` 只能退化成
+"pressure() > 0 才算有压感"，于是"真实笔但此刻读数为 0"与"无压感轴的笔"无法区分——这是有意的降级，
+代码里也写了注释。夹具却按 Qt6 语义断言"能力存在 ⇒ 永远 has_pressure=1"，两边自然打架。
+
+修法是让断言跟着平台契约走，而不是去改适配器（改适配器等于把一个已知的信息缺口伪装成能力）：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        const int expectedHasPressure = 1;              // 能力可查询
+#else
+        const int expectedHasPressure = clamped > 0.0 ? 1 : 0;   // 只有读数能判
+#endif
+```
+
+改完本机绿。这条教训值得单列：**"只在 CI 上红"不等于"只在 Linux 上错"**——那份 56 条清单里有几条
+其实在本机 Windows Qt5 上也红，只是本地旧的红灯清单漏了它们（见 §9.6.64 的陈旧二进制）。
+把"平台差异"这条直觉当过滤器，代价是反复推错根因。
 
 #### 9.7.4 文本渲染 / 字形缓存（7 条）
 

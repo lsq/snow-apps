@@ -54,10 +54,36 @@ void adapterPreservesAvailablePressureAndTimestamps() {
                            0, 0, 0, Qt::ShiftModifier, Qt::NoButton, Qt::LeftButton);
         event.setTimestamp(1234);
         const auto input = snow_canvas_input::makePointerInput(event, SNOW_POINTER_EVENT_MOVE);
-        require(input.pointer.device == SNOW_POINTER_DEVICE_PEN && input.pointer.pointer_id == 2 &&
-                    input.pointer.has_pressure == 1 && input.pointer.timestamp_ms == 1234 &&
-                    input.pointer.position_x == 20.5 && input.pointer.position_y == 30.25 &&
-                    input.pointer.pressure == std::max(0.0, std::min(1.0, pressure)),
+        const double clamped = std::max(0.0, std::min(1.0, pressure));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        // Qt 6 can ask the transducer whether it has a pressure axis, so the
+        // fixture device declares the capability and every sample reports one --
+        // including a legitimate zero reading.
+        const int expectedHasPressure = 1;
+#else
+        // Qt 5 has no capability query on the event (see the Qt 5 branch of
+        // makePointerInput), so the adapter can only say "has pressure" once a
+        // non-zero reading arrives; a zero sample is indistinguishable from a
+        // pen without a pressure axis.
+        const int expectedHasPressure = clamped > 0.0 ? 1 : 0;
+#endif
+        const bool matches =
+            input.pointer.device == SNOW_POINTER_DEVICE_PEN && input.pointer.pointer_id == 2 &&
+            input.pointer.has_pressure == expectedHasPressure &&
+            input.pointer.timestamp_ms == 1234 && input.pointer.position_x == 20.5 &&
+            input.pointer.position_y == 30.25 && input.pointer.pressure == clamped;
+        if (!matches) {
+            // Print every clause that can drift, with the expected value next to
+            // it: "it differs" is not actionable across Qt 5 minor versions.
+            std::cerr << "tablet sample mismatch: device=" << input.pointer.device
+                      << "(want " << SNOW_POINTER_DEVICE_PEN << ") id=" << input.pointer.pointer_id
+                      << "(want 2) has_pressure=" << int(input.pointer.has_pressure) << "(want "
+                      << expectedHasPressure << ") timestamp=" << input.pointer.timestamp_ms
+                      << "(want 1234) position=" << input.pointer.position_x << ","
+                      << input.pointer.position_y << "(want 20.5,30.25) pressure="
+                      << input.pointer.pressure << "(want " << clamped << ")\n";
+        }
+        require(matches,
                 "tablet samples preserve subpixel positions, time and normalized actual pressure");
     }
     QTabletEvent invalid = snowTabletEvent(QEvent::TabletMove, pen, {}, {}, std::numeric_limits<double>::quiet_NaN(),
