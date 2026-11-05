@@ -8211,6 +8211,143 @@ menu publication diagnostic: stage=setModel mode=2 tree=… updates=0
 括号里那条 `isEmpty()` 是**有意义的**：它把"这个平台没有物理位置"写成契约。
 将来谁在 Linux 上补了物理键表，这条会失败并逼他改断言，而不是悄悄放行。
 
+#### 9.7.5b 这一轮里真正的产品缺陷（不是断言问题）
+
+三条里没有一条是"测试写错了"，都是产品在 Linux / 发行版配置下真的做错了事。
+它们此前被更早的失败挡住，看不出来。
+
+**（1）发行版配置里根本没有 ICO 编解码器**
+
+`SNOW_IMAGE_PROFILE=redistributable`（打包预设全用它）走根 `CMakeLists.txt` 里那张显式
+codec 清单：
+
+```cmake
+elseif(SNOW_APPS_BUILD_SNOW_SHOT)
+    set(_snow_workspace_image_codecs PNG JPEG GIF HEIF JXL WEBP)   # 漏了 ICON
+```
+
+漏了 `ICON`，`snow_image` 就不编 `icon_codec.cpp`，而托盘**不走** Qt 的 `imageformats`
+插件——它把 ICO/CUR 字节交给 `snow_shot_image_codec_backend`。于是自定义托盘图标在发行版里
+一律得到 `The icon directory is invalid.`，静默退回内置默认图标。
+
+同一条设置还在 `snow_shot/CMakeLists.txt` 里写过一份，但那一整块被
+`if(NOT TARGET snow_image::snow_image)` 包着，而根 `CMakeLists.txt` 第 266 行早就
+`add_subdirectory(snow_image)` 了 ⇒ **整块是死代码**，连它旁边原有的 PNG/JPEG/WEBP 三行
+FORCE 也从没生效过。判据不能看"这里写了 ON"，要看 `CMakeCache.txt` 里
+`SNOW_IMAGE_CODEC_ICON:BOOL` 和 `build.ninja` 里有没有 `icon_codec`：
+
+```
+$ grep -E "^SNOW_IMAGE_CODEC_ICON" build/windows-qt5-tests/CMakeCache.txt
+SNOW_IMAGE_CODEC_ICON:BOOL=ON
+$ grep -c icon_codec build/windows-qt5-tests/build.ninja
+2
+```
+
+**（2）X11 上"关掉历史"的窗口直捕根本没有采集路径**
+
+`captureDirectTarget()` 只在 `historyEnabled` 时才建 `SnowCaptureDesktopSession`，因为在
+Windows/macOS 上 session 是"连续刷新的历史缓冲"，一次性抓取走
+`snow_capture_target_screenshot()`。
+
+X11 两者都没有：一次性 API 只能开**显示器**，窗口是从桌面采集里裁出来的，而桌面采集**必须有
+session**。于是历史关闭 + 窗口目标 ⇒ `snapshot` 恒为 `nullptr`，返回空帧加一句
+`snow_capture_last_error_message()` 的残留文本。历史不是开 session 的理由，它只是**唯一**的调用者：
+
+```cpp
+#ifdef Q_OS_LINUX
+    const bool needsDesktopSession =
+        request.historyEnabled || request.target == DirectCaptureTarget::FocusedWindow;
+#else
+    const bool needsDesktopSession = request.historyEnabled;
+#endif
+```
+
+一次性捷径的条件（显示器目标 + 历史关闭）不动，其它行为不变。
+
+**（3）空文档的固定窗口导出，投影比画布少了一步**
+
+`renderPinnedViewport()` 对"文档里没有任何图元"的固定窗口导出自己开画布、自己
+`drawImage`，注释写着"Match the canvas export surface and painter hints"。但画布那侧还做了
+一件事：给输出设一个临时 `devicePixelRatio`（= 导出倍率），再把画笔按它的倒数缩放。这一步
+数学上是恒等，却改变了 Qt 光栅器**采样相位**——37x19 放大到 74x38 时，右/下边缘每个像素差一档
+（实测 `#fcb40090` 对 `#fbb4008f`）。
+
+修法不是让手写那份去模仿，而是**消灭第二份实现**：导出面本来就有"没有 runtime 时只做投影"
+的分支（`renderToImage()` 在场景同步不上时就是那么走的），把它暴露出来：
+
+```cpp
+// snow_canvas_runtime.h
+static QImage projectSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                    const QList<CanvasExportSource>& sources);
+```
+
+`snow_shot` 的空文档分支改调它，两条路径从此是同一段代码，而不是两个"应当相等"的实现。
+
+**（4）顺带：测试算参考值时绕过了产品漏斗**
+
+`screenshot_export_artifact_tests` 的 sRGB 参考值是
+`image.copy().convertedToColorSpace(SRgb).convertToFormat(RGBA8888)`。源是 `Format_Mono` 时，
+Qt5 会在索引布局里"展开→变换→重新量化"，小图干脆不转（§9.6.60），于是它和行源比的根本不是
+裁剪，而是**调色板量化**。参考值改成先展开到 32 位再转（与 `snowImageConvertedToColorSpace()`
+同一条路），Qt6 上两种写法逐像素等价，所以不需要 `#if`。
+
+**本机 Windows + Qt5 已知差异（不是 Linux 问题）**：同一套件里
+`lazyResizeRowsAndRegionsPreserveFullImagePixels()` 的"copied row and ROI callbacks share a
+synchronized bounded conversion reader"在本机偶发失败、偶发 `EXIT=139`（`Format_RGBA64_Premultiplied`，
+共享的 `BoundedSrgbRowReader` 两道线程），而 Linux 的顺序里它**先于**空文档用例执行而且从没红过
+（arm64 日志的首条失败就是空文档那条）。疑点在 Qt5 `QColorSpace` 转换缓存的线程安全，属于本机
+Harness 噪声，先记录不追。
+
+#### 9.7.5c 托盘三条断言：平台读法而不是平台能力
+
+`system-tray-controller` / `recording-export-tray` 两个 ctest 条目其实是**同一个 exe**
+（`--recording-export-only`），所以一处改两处生效。
+
+**（1）通知点击被算了两遍**
+
+导出完成的通知流程里有一句裸的 `trayIcon->messageClicked()`，它落在"托盘已隐藏 → 点旧气泡
+不该打开文件"的段落中间。三平台语义不同：
+
+| | `messageClicked` 是否连到 `activateMessage` | 那次点击的含义 |
+| --- | --- | --- |
+| Windows | 是 | 就是被测行为：隐藏的托盘不能再打开文件 |
+| macOS | **否**（`#ifndef Q_OS_MACOS` 才连） | 空操作 |
+| Linux | 是 | 第二条通道，而紧接着的两条 `notifications->activated(...)` 才是原生通知的点击 |
+
+Linux 上两条通道同时活着，同一份导出被打开两次，`openedPaths` 只可能对不上。改法是把它放回
+它本来测的那个平台：
+
+```cpp
+#if !defined(Q_OS_MACOS) && !defined(Q_OS_LINUX)
+        trayIcon->messageClicked();
+#endif
+```
+
+**（2）"没有活动窗口"在无 WM 的环境里不成立**
+
+`QApplication::activeWindow() == nullptr` 在 `offscreen` 下永远为假：没有窗口管理器在最后一个
+对话框关闭时清除 Qt 的焦点窗口，实测拿到的是一个 `visible=0` 的裸 `QWidget`。这属于
+"断言环境而非产品"第二类（runner）。能对两版都成立的说法是**没有可见窗口持有焦点**：
+
+```cpp
+    const QWidget* activeWindow = QApplication::activeWindow();
+    require(activeWindow == nullptr || !activeWindow->isVisible(),
+            "the tray-only state should have no active window");
+```
+
+留着的部分才是契约：真有对话框没关掉（`isVisible()` 为真）照样红。
+
+**（3）ICO 前置断言永远不可能成立**
+
+那一段原本在用到处才 `QCoreApplication::setLibraryPaths({})`，然后断言
+`!QImageReader::supportedImageFormats().contains("ico")`。Qt5 的插件扫描是**第一次查询时就定型**，
+只要那次扫到了东西就不再重扫，所以到这一步 ICO 插件早已在缓存里——断言必假，而 `require`
+会 `exit(1)`，整套通知断言一条都跑不到。
+
+唯一的时机窗口是"进程还没解码过任何图像之前"。于是把清空提到 `main()` 里 `QApplication`
+构造之后、`verifyTrayMenuPosition()` 之前，ICO 段只负责恢复；原本紧跟其后的 JPEG 方向环
+（需要 jpeg 插件）挪到恢复之后。中间那段不需要任何非内置格式（夹具是 PNG，内置托盘图标也是 PNG）。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
@@ -8221,8 +8358,11 @@ menu publication diagnostic: stage=setModel mode=2 tree=… updates=0
 `magnifier-render`、`magnifier-interaction`、`pinned-recognition-save`、`pinned-quick-save`、
 `about-page`、`settings-color-commit`、`screen-recording-shortcut`、
 `recording-history-shortcut`、`recording-audio-controller`、`recording-audio-gain-popover`、
-`recording-hidden-tool-shortcut`、`print-export-snapshot`、`region-shadow-renderer`、
-`selection-background-preview`、`layout-compaction`、`export-artifact`。
+`recording-hidden-tool-shortcut`、`region-shadow-renderer`、
+`selection-background-preview`、`layout-compaction`。
+
+已移出本清单（2026-11-05，见 §9.7.5b / §9.7.5c）：`system-tray-controller`、
+`recording-export-tray`、`direct-capture-native`、`export-artifact`、`print-export-snapshot`。
 
 这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是**同一根因打多个套件**，修一条消一片；
 这一组反过来，修一条只消一条。

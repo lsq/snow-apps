@@ -9377,6 +9377,123 @@ void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::
 </code></pre>
 <p>括号里那条 <code>isEmpty()</code> 是<strong>有意义的</strong>：它把"这个平台没有物理位置"写成契约。
 将来谁在 Linux 上补了物理键表，这条会失败并逼他改断言，而不是悄悄放行。</p>
+<h4>9.7.5b 这一轮里真正的产品缺陷（不是断言问题）</h4>
+<p>三条里没有一条是"测试写错了"，都是产品在 Linux / 发行版配置下真的做错了事。
+它们此前被更早的失败挡住，看不出来。</p>
+<p><strong>（1）发行版配置里根本没有 ICO 编解码器</strong></p>
+<p><code>SNOW_IMAGE_PROFILE=redistributable</code>（打包预设全用它）走根 <code>CMakeLists.txt</code> 里那张显式
+codec 清单：</p>
+<pre><code class="language-cmake">elseif(SNOW_APPS_BUILD_SNOW_SHOT)
+    set(_snow_workspace_image_codecs PNG JPEG GIF HEIF JXL WEBP)   # 漏了 ICON
+</code></pre>
+<p>漏了 <code>ICON</code>，<code>snow_image</code> 就不编 <code>icon_codec.cpp</code>，而托盘<strong>不走</strong> Qt 的 <code>imageformats</code>
+插件——它把 ICO/CUR 字节交给 <code>snow_shot_image_codec_backend</code>。于是自定义托盘图标在发行版里
+一律得到 <code>The icon directory is invalid.</code>，静默退回内置默认图标。</p>
+<p>同一条设置还在 <code>snow_shot/CMakeLists.txt</code> 里写过一份，但那一整块被
+<code>if(NOT TARGET snow_image::snow_image)</code> 包着，而根 <code>CMakeLists.txt</code> 第 266 行早就
+<code>add_subdirectory(snow_image)</code> 了 ⇒ <strong>整块是死代码</strong>，连它旁边原有的 PNG/JPEG/WEBP 三行
+FORCE 也从没生效过。判据不能看"这里写了 ON"，要看 <code>CMakeCache.txt</code> 里
+<code>SNOW_IMAGE_CODEC_ICON:BOOL</code> 和 <code>build.ninja</code> 里有没有 <code>icon_codec</code>：</p>
+<pre><code>$ grep -E &quot;^SNOW_IMAGE_CODEC_ICON&quot; build/windows-qt5-tests/CMakeCache.txt
+SNOW_IMAGE_CODEC_ICON:BOOL=ON
+$ grep -c icon_codec build/windows-qt5-tests/build.ninja
+2
+</code></pre>
+<p><strong>（2）X11 上"关掉历史"的窗口直捕根本没有采集路径</strong></p>
+<p><code>captureDirectTarget()</code> 只在 <code>historyEnabled</code> 时才建 <code>SnowCaptureDesktopSession</code>，因为在
+Windows/macOS 上 session 是"连续刷新的历史缓冲"，一次性抓取走
+<code>snow_capture_target_screenshot()</code>。</p>
+<p>X11 两者都没有：一次性 API 只能开<strong>显示器</strong>，窗口是从桌面采集里裁出来的，而桌面采集<strong>必须有
+session</strong>。于是历史关闭 + 窗口目标 ⇒ <code>snapshot</code> 恒为 <code>nullptr</code>，返回空帧加一句
+<code>snow_capture_last_error_message()</code> 的残留文本。历史不是开 session 的理由，它只是<strong>唯一</strong>的调用者：</p>
+<pre><code class="language-cpp">#ifdef Q_OS_LINUX
+    const bool needsDesktopSession =
+        request.historyEnabled || request.target == DirectCaptureTarget::FocusedWindow;
+#else
+    const bool needsDesktopSession = request.historyEnabled;
+#endif
+</code></pre>
+<p>一次性捷径的条件（显示器目标 + 历史关闭）不动，其它行为不变。</p>
+<p><strong>（3）空文档的固定窗口导出，投影比画布少了一步</strong></p>
+<p><code>renderPinnedViewport()</code> 对"文档里没有任何图元"的固定窗口导出自己开画布、自己
+<code>drawImage</code>，注释写着"Match the canvas export surface and painter hints"。但画布那侧还做了
+一件事：给输出设一个临时 <code>devicePixelRatio</code>（= 导出倍率），再把画笔按它的倒数缩放。这一步
+数学上是恒等，却改变了 Qt 光栅器<strong>采样相位</strong>——37x19 放大到 74x38 时，右/下边缘每个像素差一档
+（实测 <code>#fcb40090</code> 对 <code>#fbb4008f</code>）。</p>
+<p>修法不是让手写那份去模仿，而是<strong>消灭第二份实现</strong>：导出面本来就有"没有 runtime 时只做投影"
+的分支（<code>renderToImage()</code> 在场景同步不上时就是那么走的），把它暴露出来：</p>
+<pre><code class="language-cpp">// snow_canvas_runtime.h
+static QImage projectSourcesToImage(const QRectF&amp; canvasRect, const QSize&amp; outputSize,
+                                    const QList&lt;CanvasExportSource&gt;&amp; sources);
+</code></pre>
+<p><code>snow_shot</code> 的空文档分支改调它，两条路径从此是同一段代码，而不是两个"应当相等"的实现。</p>
+<p><strong>（4）顺带：测试算参考值时绕过了产品漏斗</strong></p>
+<p><code>screenshot_export_artifact_tests</code> 的 sRGB 参考值是
+<code>image.copy().convertedToColorSpace(SRgb).convertToFormat(RGBA8888)</code>。源是 <code>Format_Mono</code> 时，
+Qt5 会在索引布局里"展开→变换→重新量化"，小图干脆不转（§9.6.60），于是它和行源比的根本不是
+裁剪，而是<strong>调色板量化</strong>。参考值改成先展开到 32 位再转（与 <code>snowImageConvertedToColorSpace()</code>
+同一条路），Qt6 上两种写法逐像素等价，所以不需要 <code>#if</code>。</p>
+<p><strong>本机 Windows + Qt5 已知差异（不是 Linux 问题）</strong>：同一套件里
+<code>lazyResizeRowsAndRegionsPreserveFullImagePixels()</code> 的"copied row and ROI callbacks share a
+synchronized bounded conversion reader"在本机偶发失败、偶发 <code>EXIT=139</code>（<code>Format_RGBA64_Premultiplied</code>，
+共享的 <code>BoundedSrgbRowReader</code> 两道线程），而 Linux 的顺序里它<strong>先于</strong>空文档用例执行而且从没红过
+（arm64 日志的首条失败就是空文档那条）。疑点在 Qt5 <code>QColorSpace</code> 转换缓存的线程安全，属于本机
+Harness 噪声，先记录不追。</p>
+<h4>9.7.5c 托盘三条断言：平台读法而不是平台能力</h4>
+<p><code>system-tray-controller</code> / <code>recording-export-tray</code> 两个 ctest 条目其实是<strong>同一个 exe</strong>
+（<code>--recording-export-only</code>），所以一处改两处生效。</p>
+<p><strong>（1）通知点击被算了两遍</strong></p>
+<p>导出完成的通知流程里有一句裸的 <code>trayIcon-&gt;messageClicked()</code>，它落在"托盘已隐藏 → 点旧气泡
+不该打开文件"的段落中间。三平台语义不同：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>messageClicked</code> 是否连到 <code>activateMessage</code></th>
+<th>那次点击的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Windows</td>
+<td>是</td>
+<td>就是被测行为：隐藏的托盘不能再打开文件</td>
+</tr>
+<tr>
+<td>macOS</td>
+<td><strong>否</strong>（<code>#ifndef Q_OS_MACOS</code> 才连）</td>
+<td>空操作</td>
+</tr>
+<tr>
+<td>Linux</td>
+<td>是</td>
+<td>第二条通道，而紧接着的两条 <code>notifications-&gt;activated(...)</code> 才是原生通知的点击</td>
+</tr>
+</tbody>
+</table>
+<p>Linux 上两条通道同时活着，同一份导出被打开两次，<code>openedPaths</code> 只可能对不上。改法是把它放回
+它本来测的那个平台：</p>
+<pre><code class="language-cpp">#if !defined(Q_OS_MACOS) &amp;&amp; !defined(Q_OS_LINUX)
+        trayIcon-&gt;messageClicked();
+#endif
+</code></pre>
+<p><strong>（2）"没有活动窗口"在无 WM 的环境里不成立</strong></p>
+<p><code>QApplication::activeWindow() == nullptr</code> 在 <code>offscreen</code> 下永远为假：没有窗口管理器在最后一个
+对话框关闭时清除 Qt 的焦点窗口，实测拿到的是一个 <code>visible=0</code> 的裸 <code>QWidget</code>。这属于
+"断言环境而非产品"第二类（runner）。能对两版都成立的说法是<strong>没有可见窗口持有焦点</strong>：</p>
+<pre><code class="language-cpp">    const QWidget* activeWindow = QApplication::activeWindow();
+    require(activeWindow == nullptr || !activeWindow-&gt;isVisible(),
+            &quot;the tray-only state should have no active window&quot;);
+</code></pre>
+<p>留着的部分才是契约：真有对话框没关掉（<code>isVisible()</code> 为真）照样红。</p>
+<p><strong>（3）ICO 前置断言永远不可能成立</strong></p>
+<p>那一段原本在用到处才 <code>QCoreApplication::setLibraryPaths({})</code>，然后断言
+<code>!QImageReader::supportedImageFormats().contains("ico")</code>。Qt5 的插件扫描是<strong>第一次查询时就定型</strong>，
+只要那次扫到了东西就不再重扫，所以到这一步 ICO 插件早已在缓存里——断言必假，而 <code>require</code>
+会 <code>exit(1)</code>，整套通知断言一条都跑不到。</p>
+<p>唯一的时机窗口是"进程还没解码过任何图像之前"。于是把清空提到 <code>main()</code> 里 <code>QApplication</code>
+构造之后、<code>verifyTrayMenuPosition()</code> 之前，ICO 段只负责恢复；原本紧跟其后的 JPEG 方向环
+（需要 jpeg 插件）挪到恢复之后。中间那段不需要任何非内置格式（夹具是 PNG，内置托盘图标也是 PNG）。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、
@@ -9386,8 +9503,10 @@ void settleRetiredOwner() { QCoreApplication::sendPostedEvents(nullptr, QEvent::
 <code>magnifier-render</code>、<code>magnifier-interaction</code>、<code>pinned-recognition-save</code>、<code>pinned-quick-save</code>、
 <code>about-page</code>、<code>settings-color-commit</code>、<code>screen-recording-shortcut</code>、
 <code>recording-history-shortcut</code>、<code>recording-audio-controller</code>、<code>recording-audio-gain-popover</code>、
-<code>recording-hidden-tool-shortcut</code>、<code>print-export-snapshot</code>、<code>region-shadow-renderer</code>、
-<code>selection-background-preview</code>、<code>layout-compaction</code>、<code>export-artifact</code>。</p>
+<code>recording-hidden-tool-shortcut</code>、<code>region-shadow-renderer</code>、
+<code>selection-background-preview</code>、<code>layout-compaction</code>。</p>
+<p>已移出本清单（2026-11-05，见 §9.7.5b / §9.7.5c）：<code>system-tray-controller</code>、
+<code>recording-export-tray</code>、<code>direct-capture-native</code>、<code>export-artifact</code>、<code>print-export-snapshot</code>。</p>
 <p>这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是<strong>同一根因打多个套件</strong>，修一条消一片；
 这一组反过来，修一条只消一条。</p>
 <p>工具侧同时补了两条：<code>gh-ci.py</code> 的 <code>read_body()</code> 重试 + Range 分段（§9.6.65），
