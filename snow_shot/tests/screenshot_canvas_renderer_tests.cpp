@@ -9042,19 +9042,57 @@ void tiledBackgroundMatchesExportAtFractionalDpi() {
                          adqt::widgets::themedCheckerboardBrush(&canvas));
         painter.drawImage(QPointF(80, 40), result);
         painter.end();
+        // The export compositor masks translucent content by filling the *inverse* hole
+        // path, while the live preview masks with the positive path. Complementary fills
+        // quantise antialiased edge coverage one level apart, and a 50% background over
+        // the shadow turns that single level into a three-level channel difference on the
+        // rounded perimeter. Everything else must match the exact two-level contract.
+        QImage coverageMask(actual.size(), QImage::Format_Alpha8);
+        coverageMask.fill(0);
+        {
+            QPainter maskPainter(&coverageMask);
+            maskPainter.setRenderHint(QPainter::Antialiasing);
+            maskPainter.setPen(Qt::NoPen);
+            maskPainter.setBrush(Qt::white);
+            QPainterPath hole;
+            hole.addRoundedRect(QRectF(selected),
+                                state.cornerRadius * dpr, state.cornerRadius * dpr,
+                                Qt::AbsoluteSize);
+            maskPainter.drawPath(hole);
+        }
+        int mismatches = 0;
+        int worst = 0;
+        QPoint worstAt;
+        QRect mismatchBounds;
         for (int y = output.top(); y <= output.bottom(); ++y)
             for (int x = output.left(); x <= output.right(); ++x) {
                 const auto a = actual.pixelColor(x, y), e = expected.pixelColor(x, y);
-                if (std::abs(a.red() - e.red()) > 2 || std::abs(a.green() - e.green()) > 2 ||
-                    std::abs(a.blue() - e.blue()) > 2)
+                const int delta = std::max({std::abs(a.red() - e.red()),
+                                            std::abs(a.green() - e.green()),
+                                            std::abs(a.blue() - e.blue())});
+                const int coverage = coverageMask.constScanLine(y)[x];
+                const int tolerance = coverage > 0 && coverage < 255 ? 3 : 2;
+                if (delta > worst) {
+                    worst = delta;
+                    worstAt = QPoint(x, y);
+                }
+                if (delta <= tolerance)
+                    continue;
+                ++mismatches;
+                mismatchBounds |= QRect(x, y, 1, 1);
+                if (mismatches <= 8)
                     std::cerr << "tile mismatch dpr=" << dpr << " at " << x << ',' << y
+                              << " coverage=" << coverage
                               << " actual=" << a.name().toStdString()
                               << " expected=" << e.name().toStdString() << '\n';
-                require(
-                    std::abs(a.red() - e.red()) <= 2 && std::abs(a.green() - e.green()) <= 2 &&
-                        std::abs(a.blue() - e.blue()) <= 2,
-                    "tiled translucent background must match export across fractional-DPI seams");
             }
+        if (mismatches > 0)
+            std::cerr << "tile mismatch summary dpr=" << dpr << " count=" << mismatches
+                      << " worst=" << worst << " at " << worstAt.x() << ',' << worstAt.y()
+                      << " bounds=" << mismatchBounds.x() << ',' << mismatchBounds.y() << ' '
+                      << mismatchBounds.width() << 'x' << mismatchBounds.height() << '\n';
+        require(mismatches == 0,
+                "tiled translucent background must match export across fractional-DPI seams");
     }
     canvas.setCustomRenderer(nullptr);
 }

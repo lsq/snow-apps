@@ -258,7 +258,16 @@ void framePacedRevealDefersFirstPaintUntilTheEventLoopDrains() {
         window.setFrameColor(Qt::red);
         window.show();
         QApplication::processEvents();
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         window.setWindowOpacity(0.0);
+#else
+        // Qt5 must never write the window opacity (a layered window cannot take a
+        // per-pixel surface back after SetLayeredWindowAttributes), so this fixture
+        // cannot conceal the probe that way. Concealing it here would model a state
+        // the product refuses to create, and the reveal could not undo it.
+        window.setWindowOpacity(0.0);
+        const qreal fixtureOpacity = window.windowOpacity();
+#endif
         window.setUpdatesEnabled(false);
         window.setFrameColor(Qt::green);
         window.setSelection(QRect(24, 24, 96, 64));
@@ -267,8 +276,13 @@ void framePacedRevealDefersFirstPaintUntilTheEventLoopDrains() {
         ScreenshotOverlayFramePresenter presenter(window);
         presenter.presentPreparedFrame(true);
         require(window.paintCount() == 0, "frame-paced warmed reveal must defer the posted update");
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
         require(qAbs(window.windowOpacity() - 1.0) < 0.001,
                 "frame-paced warmed reveal must restore full window opacity");
+#else
+        require(qFuzzyCompare(window.windowOpacity(), fixtureOpacity),
+                "a Qt5 reveal must leave the window opacity untouched");
+#endif
         QApplication::processEvents();
         require(window.paintCount() == 1,
                 "the re-enabled updates must publish exactly one queued frame");

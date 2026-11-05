@@ -110,6 +110,11 @@ void requireMatchingPixels(const QImage& actual, const QImage& expected, const s
                     firstMismatch = {x, y};
                 mismatchBounds = mismatchBounds.united(QRect(x, y, 1, 1));
                 ++mismatchCount;
+                if (mismatchCount <= 40)
+                    std::cerr << "  mismatch " << x << ',' << y << " actual=" << qAlpha(a) << '/'
+                              << qRed(a) << '/' << qGreen(a) << '/' << qBlue(a)
+                              << " expected=" << qAlpha(e) << '/' << qRed(e) << '/' << qGreen(e)
+                              << '/' << qBlue(e) << '\n';
             }
         }
     }

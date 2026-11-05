@@ -552,6 +552,39 @@ struct RegionTile {
     QPainterPath path;
 };
 
+// Qt maps a clip rectangle through the painter transform and rounds it outward
+// in device pixels (floor on the top/left edge, ceil on the bottom/right edge).
+// Two tiles that share an internal edge therefore both cover the device row or
+// column that straddles a fractional seam, and DestinationOver composites that
+// shadow twice: one row comes out at a + a*(1 - a) instead of a, which on a
+// 48/255 rim is a visible 30-level step. Pin every internal edge to the same
+// whole device coordinate on both sides, biased a quarter pixel into each tile
+// so floating-point noise cannot push either one back across.
+QRectF snappedInternalClip(const QRectF& clip, const QRect& core, const QTransform& toDevice) {
+    const QTransform toImage = toDevice.inverted();
+    if (!toImage.isInvertible())
+        return clip;
+    const QRectF frame(core);
+    constexpr qreal bias = 0.25;
+    const auto pin = [&](qreal coordinate, bool horizontal, qreal direction) {
+        const qreal device = horizontal ? toDevice.map(QPointF(coordinate, 0.0)).x()
+                                        : toDevice.map(QPointF(0.0, coordinate)).y();
+        const qreal pinned = std::round(device) + direction * bias;
+        return horizontal ? toImage.map(QPointF(pinned, 0.0)).x()
+                          : toImage.map(QPointF(0.0, pinned)).y();
+    };
+    QRectF snapped = clip;
+    if (qFuzzyCompare(clip.left(), frame.left()))
+        snapped.setLeft(pin(clip.left(), true, 1.0));
+    if (qFuzzyCompare(clip.right(), frame.right()))
+        snapped.setRight(pin(clip.right(), true, -1.0));
+    if (qFuzzyCompare(clip.top(), frame.top()))
+        snapped.setTop(pin(clip.top(), false, 1.0));
+    if (qFuzzyCompare(clip.bottom(), frame.bottom()))
+        snapped.setBottom(pin(clip.bottom(), false, -1.0));
+    return snapped;
+}
+
 std::vector<RegionTile> sparseRegionTiles(const QPainterPath& path, const QRect& outputBounds,
                                           int shadowWidth) {
     std::vector<RegionTile> tiles;
@@ -1219,7 +1252,8 @@ void ScreenshotRegionShadowRenderer::render(
             clip.setLeft(-edgeGuardX);
             clip.setRight(outputWidth + edgeGuardX);
             painter.save();
-            painter.setClipRect(clip, Qt::IntersectClip);
+            painter.setClipRect(snappedInternalClip(clip, core, painter.deviceTransform()),
+                                Qt::IntersectClip);
             painter.drawImage(halo.topLeft(), strip);
             painter.restore();
         }
@@ -1250,7 +1284,8 @@ void ScreenshotRegionShadowRenderer::render(
                 clip.setRight(outputBounds.width() + edgeGuardX);
             if (tile.core.bottom() == outputBounds.height() - 1)
                 clip.setBottom(outputBounds.height() + edgeGuardY);
-            painter.setClipRect(clip, Qt::IntersectClip);
+            painter.setClipRect(snappedInternalClip(clip, tile.core, painter.deviceTransform()),
+                                Qt::IntersectClip);
         }
         painter.drawImage(tile.halo.topLeft() + tile.rasterBounds.topLeft(), shadow);
         painter.restore();

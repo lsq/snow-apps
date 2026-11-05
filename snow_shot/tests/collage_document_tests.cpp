@@ -437,6 +437,16 @@ void transformedRowsPreserveNativePixelsAndBoundMemory() {
             const auto expected =
                 materializeCollageRows(prepareCollageRows(expectedItems, settings));
             auto rows = prepareCollageRows(actualItems, settings);
+            if (!rows.isValid() || materializeCollageRows(rows) != expected) {
+                const QImage produced = materializeCollageRows(rows);
+                std::cerr << "collage transform format=" << int(format)
+                          << " valid=" << rows.isValid() << " size=" << produced.width() << 'x'
+                          << produced.height() << " expected=" << expected.width() << 'x'
+                          << expected.height() << " spaceValid=" << produced.colorSpace().isValid()
+                          << " spaceMatches=" << (produced.colorSpace() == source.colorSpace())
+                          << " expectedSpaceMatches="
+                          << (expected.colorSpace() == source.colorSpace()) << '\n';
+            }
             require(rows.isValid() && materializeCollageRows(rows) == expected,
                     "bounded transforms preserve native orientation, alpha and ICC pixels");
             const qsizetype stride = qsizetype(rows.size.width()) * 4 + 12;

@@ -8348,6 +8348,143 @@ Linux 上两条通道同时活着，同一份导出被打开两次，`openedPath
 构造之后、`verifyTrayMenuPosition()` 之前，ICO 段只负责恢复；原本紧跟其后的 JPEG 方向环
 （需要 jpeg 插件）挪到恢复之后。中间那段不需要任何非内置格式（夹具是 PNG，内置托盘图标也是 PNG）。
 
+#### 9.7.5d 2026-11-05 这一批：一条产品缺陷 + 七条「断言写的是另一条管线」
+
+**（1）调色板源导出偏色（真产品缺陷）**
+
+`ImageSplitExport` 把源图 `convertToFormat(ARGB32)` 之后才转色彩空间。索引/单色源（`depth() <= 8`）
+在 Qt5 上是「展开 → 变换 → 重新量化回同一批 256（或 2）个 palette 项」，小图干脆不转（§9.6.60）：
+索引 DisplayP3 源导出 1517 像素里 635 个偏色，最深 0x0f。修法是先展开再变换，且**展开会丢
+profile**，必须把 `colorSpace()` 取出来再 `setColorSpace()` 复原：
+
+```cpp
+if (!converted.isNull() && converted.depth() <= 8) {
+    const auto space = converted.colorSpace();
+    converted = converted.convertToFormat(QImage::Format_ARGB32);
+    if (!converted.isNull())
+        converted.setColorSpace(space);
+}
+```
+
+测试侧 `normalizedForExport()` 是同一件事的参考实现，必须同步展开，否则它拿来比的还是原始
+palette 项（§9.7.5b(4)）。
+
+**（2）`lrelease` 会丢弃「译文与源文相同」的条目**
+
+en_US 目录里只留下英文真正覆盖的少数串。`QTranslator::translate()` 对缺失条目返回**空 QString**，
+而应用侧 `tr()` 会回退到源文——测试若直接拿 `translate()` 的返回值比，期望就变成空串，
+`QString::arg` 还会顺手报 "Argument missing"。复现回退时必须用 `fromUtf8`：
+About 文案里有 `·` 和 `©`，`fromLatin1` 会把两字节拆成 `Â…`，打印出来一模一样，只有比较才暴露。
+
+**（3）QPainter 的「正路径」与「反向空洞路径」AA 差一级**
+
+`selection-background-preview`（= `screenshot-canvas-renderer-tests --background-opacity-only`）
+在 dpr=1.3 的一个像素上差 3 档：`#8594a7` 对 `#8292a6`，本机与 CI **同点同值**，所以既不是平台差
+也不是随机。原因是两条管线填的是互补路径：预览用正路径填覆盖度（`maskSelectionPreview`、
+`maskBackgroundForSelection` 都填 `selectionPath`），导出合成器 `compose()` 的 `roundedHole()`
+填的是「矩形减圆角」的反向空洞。Qt 光栅器对互补填充的覆盖度量化可以差一级，而 50% 背景叠在
+阴影上正好把这一级放大成 3 档。
+
+能写死的判据是按覆盖度分层，而不是整体放宽容差：
+
+```cpp
+const int tolerance = coverage > 0 && coverage < 255 ? 3 : 2;
+```
+
+测试自己用**同一条圆角路径**（`selected` + `cornerRadius * dpr`）填一张 `Format_Alpha8`
+覆盖度图来判边。整帧 22 万像素里只有这一个像素越界，放宽到 3 之后其余仍是 2 的严格契约。
+
+**（4）Qt5 绝不写窗口 opacity，所以那个 fixture 是「不可能状态」**
+
+Qt5 的 windows 插件把 `setWindowOpacity()` 实现成 `SetLayeredWindowAttributes`（常量 alpha），
+与 `WA_TranslucentBackground` 的逐像素 alpha 混用后窗口卡在常量 alpha 模式，再
+`setWindowOpacity(1.0)` 也拿不回来（§9.7.5 附近的说明）。所以 `shouldConcealFirstPaint()` 在 Qt5
+恒 `false`、`setConcealWindowOpacity()` 是空函数。
+
+`frame-paced warmed reveal` 的 fixture 自己 `setWindowOpacity(0.0)` 来模拟遮盖，然后要求
+presenter 恢复成 1.0——这在 Qt5 上描述的是产品**拒绝制造**的状态，永远不可能成立。改成断言
+产品真正的不变量：
+
+```cpp
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+        require(qAbs(window.windowOpacity() - 1.0) < 0.001,
+                "frame-paced warmed reveal must restore full window opacity");
+#else
+        require(qFuzzyCompare(window.windowOpacity(), fixtureOpacity),
+                "a Qt5 reveal must leave the window opacity untouched");
+#endif
+```
+
+**（5）分数 DPR 下「子矩形重绘 == 整帧重绘」不能逐像素要求相等**
+
+`image-split-canvas` 把上报的 damage 子矩形渲染到上一帧副本上，再和整帧比较。dpr=1.5 时
+damage 的边界列在设备空间取整，合法地差一档（实测 `x=233`）。可断言的不变量是「所有变化像素
+都落在上报 damage 的设备空间覆盖内」：
+
+```cpp
+const auto bounds = damage.boundingRect();
+const QRect allowed(QPoint(qFloor(bounds.left() * scale) - 1, qFloor(bounds.top() * scale) - 1),
+                    QPoint(qCeil((bounds.left() + bounds.width()) * scale),
+                           qCeil((bounds.top() + bounds.height()) * scale)));
+require(allowed.contains(changed), "...");
+```
+
+变化框要按行 `memcmp` 先筛掉相同行，否则 90 次逐像素扫描把用例拖到 77 秒（改后 68 秒）。
+
+**（6）高斯滤镜逐 tile 重采样：旋转字形的 alpha 容差**
+
+`layout-compaction` 的 `batched pixels must retain source samples and exact coverage`：
+`decoration=3 scale=2` 时 `alphaErrors=1200`、最大差 1。高斯滤镜每个 tile 带自己的 halo 重采样，
+裁剪过的字形跨度落点会和整体渲染差一级。判据改成比**最大 alpha 差**并给逐级容差
+（`scale==1.25 → 5`，`decoration==2 → 2`，`decoration==3 → 1`），其余integral/半倍采样仍是精确相等。
+
+**（7）两条「数字写死在注释里」的计数断言**
+
+- `settings-color-commit` 的 `cover all ten settings color pickers`：登记表早已 15 个颜色字段。
+  改成从 registry 推导（`SettingsFieldKind::Color` 计数），顺带把 ctest `TIMEOUT 30` 抬到 120
+  （本机 50.6 秒）。
+- `configuration-archive` 的 `only settings that actually differ must announce changes`：期望集合
+  改成按 `applySnapshot()` 前后**真实快照 diff** 推导。materialize 会修复重复默认快捷键
+  （`pin_to_screen_shortcuts/toggle_playback` 与 `drawing_mode` 都是 `Space`），那是真实值变化，
+  不是多余公告。
+
+#### 9.7.5e 阴影 tile 接缝被合成两次（真产品缺陷，两个平台都有）
+
+`region-shadow-renderer` 报 `dense tiled union and hole dpr=1.000000 transform=1: maximum
+premultiplied channel difference=34 ... mismatch count=12 bounds=47,473,1041,1`，本机与 CI 逐位相同。
+
+先把 12 个越界像素打出来，形态就很清楚了：同一行上有左右两组对称的 6 像素斜坡，`actual` 恰好是
+`expected` 的「合成两次」——`a + a*(1-a)` 而不是 `a`（40→74、28→53、18→35、10→20、5→10、2→4、
+1→2，逐个对得上）。所以不是掩膜算错，是同一块阴影被 `DestinationOver` 叠了两遍。
+
+为什么会叠两遍：那一行的 `d = 473.17` 正好是 tile 网格接缝（图 512 像素）映射到设备空间的位置，
+而 Qt5 光栅器把 clip 矩形**向外取整**。用一个 20 行探针程序就能直接量出来：
+
+```
+seam=473.1700
+top    first=0 last=473      // 上 tile 的 clip.bottom=512 → ceil(473.17)-1 = 473
+bottom first=473 last=599    // 下 tile 的 clip.top=512   → floor(473.17) = 473
+```
+
+设备行 473 被两个 tile 同时覆盖。中间为什么不显形：那一行大部分像素在选区内部，阴影 alpha 本来就是
+0，只有左右两侧的阴影斜坡（选区边界）非零——于是表现为「一行的两条边变黑一倍」。
+
+修法不是放大容差，而是让两侧的 clip 边落在**同一个整设备坐标**上，各自再偏四分之一像素进自己这
+侧（抵消浮点噪声，保证 `floor(int+0.25)` 与 `ceil(int-0.25)-1` 恰好不重叠也不留缝）：
+
+```cpp
+QRectF snappedInternalClip(const QRectF& clip, const QRect& core, const QTransform& toDevice) {
+    ...
+    if (qFuzzyCompare(clip.left(), frame.left()))
+        snapped.setLeft(pin(clip.left(), true, 1.0));    // 本 tile 从整列开始
+    if (qFuzzyCompare(clip.right(), frame.right()))
+        snapped.setRight(pin(clip.right(), true, -1.0)); // 本 tile 到整列之前结束
+```
+
+只钉「内部」边（`clip` 仍等于 `core` 的那几条），四周的 perimeter 边保持原来的 guard 外扩——那条注释
+说的是对的：整图边缘的抗锯齿覆盖必须由原始整图提供。tile 循环与 strip 循环两处都要钉，否则换一个
+缩放比就走回老路。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
@@ -8363,6 +8500,10 @@ Linux 上两条通道同时活着，同一份导出被打开两次，`openedPath
 
 已移出本清单（2026-11-05，见 §9.7.5b / §9.7.5c）：`system-tray-controller`、
 `recording-export-tray`、`direct-capture-native`、`export-artifact`、`print-export-snapshot`。
+
+已移出本清单（2026-11-05 第二批，见 §9.7.5d）：`about-page`、`settings-color-commit`、
+`configuration-archive`、`selection-background-preview`、`layout-compaction`、
+`image-split-editor`、`image-split-canvas`、`image-split-export`、`overlay-frame-presenter`。
 
 这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是**同一根因打多个套件**，修一条消一片；
 这一组反过来，修一条只消一条。

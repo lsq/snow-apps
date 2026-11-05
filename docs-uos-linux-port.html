@@ -9494,6 +9494,106 @@ Harness 噪声，先记录不追。</p>
 <p>唯一的时机窗口是"进程还没解码过任何图像之前"。于是把清空提到 <code>main()</code> 里 <code>QApplication</code>
 构造之后、<code>verifyTrayMenuPosition()</code> 之前，ICO 段只负责恢复；原本紧跟其后的 JPEG 方向环
 （需要 jpeg 插件）挪到恢复之后。中间那段不需要任何非内置格式（夹具是 PNG，内置托盘图标也是 PNG）。</p>
+<h4>9.7.5d 2026-11-05 这一批：一条产品缺陷 + 七条「断言写的是另一条管线」</h4>
+<p><strong>（1）调色板源导出偏色（真产品缺陷）</strong></p>
+<p><code>ImageSplitExport</code> 把源图 <code>convertToFormat(ARGB32)</code> 之后才转色彩空间。索引/单色源（<code>depth() &lt;= 8</code>）
+在 Qt5 上是「展开 → 变换 → 重新量化回同一批 256（或 2）个 palette 项」，小图干脆不转（§9.6.60）：
+索引 DisplayP3 源导出 1517 像素里 635 个偏色，最深 0x0f。修法是先展开再变换，且<strong>展开会丢
+profile</strong>，必须把 <code>colorSpace()</code> 取出来再 <code>setColorSpace()</code> 复原：</p>
+<pre><code class="language-cpp">if (!converted.isNull() &amp;&amp; converted.depth() &lt;= 8) {
+    const auto space = converted.colorSpace();
+    converted = converted.convertToFormat(QImage::Format_ARGB32);
+    if (!converted.isNull())
+        converted.setColorSpace(space);
+}
+</code></pre>
+<p>测试侧 <code>normalizedForExport()</code> 是同一件事的参考实现，必须同步展开，否则它拿来比的还是原始
+palette 项（§9.7.5b(4)）。</p>
+<p><strong>（2）<code>lrelease</code> 会丢弃「译文与源文相同」的条目</strong></p>
+<p>en_US 目录里只留下英文真正覆盖的少数串。<code>QTranslator::translate()</code> 对缺失条目返回<strong>空 QString</strong>，
+而应用侧 <code>tr()</code> 会回退到源文——测试若直接拿 <code>translate()</code> 的返回值比，期望就变成空串，
+<code>QString::arg</code> 还会顺手报 "Argument missing"。复现回退时必须用 <code>fromUtf8</code>：
+About 文案里有 <code>·</code> 和 <code>©</code>，<code>fromLatin1</code> 会把两字节拆成 <code>Â…</code>，打印出来一模一样，只有比较才暴露。</p>
+<p><strong>（3）QPainter 的「正路径」与「反向空洞路径」AA 差一级</strong></p>
+<p><code>selection-background-preview</code>（= <code>screenshot-canvas-renderer-tests --background-opacity-only</code>）
+在 dpr=1.3 的一个像素上差 3 档：<code>#8594a7</code> 对 <code>#8292a6</code>，本机与 CI <strong>同点同值</strong>，所以既不是平台差
+也不是随机。原因是两条管线填的是互补路径：预览用正路径填覆盖度（<code>maskSelectionPreview</code>、
+<code>maskBackgroundForSelection</code> 都填 <code>selectionPath</code>），导出合成器 <code>compose()</code> 的 <code>roundedHole()</code>
+填的是「矩形减圆角」的反向空洞。Qt 光栅器对互补填充的覆盖度量化可以差一级，而 50% 背景叠在
+阴影上正好把这一级放大成 3 档。</p>
+<p>能写死的判据是按覆盖度分层，而不是整体放宽容差：</p>
+<pre><code class="language-cpp">const int tolerance = coverage &gt; 0 &amp;&amp; coverage &lt; 255 ? 3 : 2;
+</code></pre>
+<p>测试自己用<strong>同一条圆角路径</strong>（<code>selected</code> + <code>cornerRadius * dpr</code>）填一张 <code>Format_Alpha8</code>
+覆盖度图来判边。整帧 22 万像素里只有这一个像素越界，放宽到 3 之后其余仍是 2 的严格契约。</p>
+<p><strong>（4）Qt5 绝不写窗口 opacity，所以那个 fixture 是「不可能状态」</strong></p>
+<p>Qt5 的 windows 插件把 <code>setWindowOpacity()</code> 实现成 <code>SetLayeredWindowAttributes</code>（常量 alpha），
+与 <code>WA_TranslucentBackground</code> 的逐像素 alpha 混用后窗口卡在常量 alpha 模式，再
+<code>setWindowOpacity(1.0)</code> 也拿不回来（§9.7.5 附近的说明）。所以 <code>shouldConcealFirstPaint()</code> 在 Qt5
+恒 <code>false</code>、<code>setConcealWindowOpacity()</code> 是空函数。</p>
+<p><code>frame-paced warmed reveal</code> 的 fixture 自己 <code>setWindowOpacity(0.0)</code> 来模拟遮盖，然后要求
+presenter 恢复成 1.0——这在 Qt5 上描述的是产品<strong>拒绝制造</strong>的状态，永远不可能成立。改成断言
+产品真正的不变量：</p>
+<pre><code class="language-cpp">#if QT_VERSION &gt;= QT_VERSION_CHECK(6, 0, 0)
+        require(qAbs(window.windowOpacity() - 1.0) &lt; 0.001,
+                &quot;frame-paced warmed reveal must restore full window opacity&quot;);
+#else
+        require(qFuzzyCompare(window.windowOpacity(), fixtureOpacity),
+                &quot;a Qt5 reveal must leave the window opacity untouched&quot;);
+#endif
+</code></pre>
+<p><strong>（5）分数 DPR 下「子矩形重绘 == 整帧重绘」不能逐像素要求相等</strong></p>
+<p><code>image-split-canvas</code> 把上报的 damage 子矩形渲染到上一帧副本上，再和整帧比较。dpr=1.5 时
+damage 的边界列在设备空间取整，合法地差一档（实测 <code>x=233</code>）。可断言的不变量是「所有变化像素
+都落在上报 damage 的设备空间覆盖内」：</p>
+<pre><code class="language-cpp">const auto bounds = damage.boundingRect();
+const QRect allowed(QPoint(qFloor(bounds.left() * scale) - 1, qFloor(bounds.top() * scale) - 1),
+                    QPoint(qCeil((bounds.left() + bounds.width()) * scale),
+                           qCeil((bounds.top() + bounds.height()) * scale)));
+require(allowed.contains(changed), &quot;...&quot;);
+</code></pre>
+<p>变化框要按行 <code>memcmp</code> 先筛掉相同行，否则 90 次逐像素扫描把用例拖到 77 秒（改后 68 秒）。</p>
+<p><strong>（6）高斯滤镜逐 tile 重采样：旋转字形的 alpha 容差</strong></p>
+<p><code>layout-compaction</code> 的 <code>batched pixels must retain source samples and exact coverage</code>：
+<code>decoration=3 scale=2</code> 时 <code>alphaErrors=1200</code>、最大差 1。高斯滤镜每个 tile 带自己的 halo 重采样，
+裁剪过的字形跨度落点会和整体渲染差一级。判据改成比<strong>最大 alpha 差</strong>并给逐级容差
+（<code>scale==1.25 → 5</code>，<code>decoration==2 → 2</code>，<code>decoration==3 → 1</code>），其余integral/半倍采样仍是精确相等。</p>
+<p><strong>（7）两条「数字写死在注释里」的计数断言</strong></p>
+<ul>
+<li><code>settings-color-commit</code> 的 <code>cover all ten settings color pickers</code>：登记表早已 15 个颜色字段。
+  改成从 registry 推导（<code>SettingsFieldKind::Color</code> 计数），顺带把 ctest <code>TIMEOUT 30</code> 抬到 120
+  （本机 50.6 秒）。</li>
+<li><code>configuration-archive</code> 的 <code>only settings that actually differ must announce changes</code>：期望集合
+  改成按 <code>applySnapshot()</code> 前后<strong>真实快照 diff</strong> 推导。materialize 会修复重复默认快捷键
+  （<code>pin_to_screen_shortcuts/toggle_playback</code> 与 <code>drawing_mode</code> 都是 <code>Space</code>），那是真实值变化，
+  不是多余公告。</li>
+</ul>
+<h4>9.7.5e 阴影 tile 接缝被合成两次（真产品缺陷，两个平台都有）</h4>
+<p><code>region-shadow-renderer</code> 报 <code>dense tiled union and hole dpr=1.000000 transform=1: maximum
+premultiplied channel difference=34 ... mismatch count=12 bounds=47,473,1041,1</code>，本机与 CI 逐位相同。</p>
+<p>先把 12 个越界像素打出来，形态就很清楚了：同一行上有左右两组对称的 6 像素斜坡，<code>actual</code> 恰好是
+<code>expected</code> 的「合成两次」——<code>a + a*(1-a)</code> 而不是 <code>a</code>（40→74、28→53、18→35、10→20、5→10、2→4、
+1→2，逐个对得上）。所以不是掩膜算错，是同一块阴影被 <code>DestinationOver</code> 叠了两遍。</p>
+<p>为什么会叠两遍：那一行的 <code>d = 473.17</code> 正好是 tile 网格接缝（图 512 像素）映射到设备空间的位置，
+而 Qt5 光栅器把 clip 矩形<strong>向外取整</strong>。用一个 20 行探针程序就能直接量出来：</p>
+<pre><code>seam=473.1700
+top    first=0 last=473      // 上 tile 的 clip.bottom=512 → ceil(473.17)-1 = 473
+bottom first=473 last=599    // 下 tile 的 clip.top=512   → floor(473.17) = 473
+</code></pre>
+<p>设备行 473 被两个 tile 同时覆盖。中间为什么不显形：那一行大部分像素在选区内部，阴影 alpha 本来就是
+0，只有左右两侧的阴影斜坡（选区边界）非零——于是表现为「一行的两条边变黑一倍」。</p>
+<p>修法不是放大容差，而是让两侧的 clip 边落在<strong>同一个整设备坐标</strong>上，各自再偏四分之一像素进自己这
+侧（抵消浮点噪声，保证 <code>floor(int+0.25)</code> 与 <code>ceil(int-0.25)-1</code> 恰好不重叠也不留缝）：</p>
+<pre><code class="language-cpp">QRectF snappedInternalClip(const QRectF&amp; clip, const QRect&amp; core, const QTransform&amp; toDevice) {
+    ...
+    if (qFuzzyCompare(clip.left(), frame.left()))
+        snapped.setLeft(pin(clip.left(), true, 1.0));    // 本 tile 从整列开始
+    if (qFuzzyCompare(clip.right(), frame.right()))
+        snapped.setRight(pin(clip.right(), true, -1.0)); // 本 tile 到整列之前结束
+</code></pre>
+<p>只钉「内部」边（<code>clip</code> 仍等于 <code>core</code> 的那几条），四周的 perimeter 边保持原来的 guard 外扩——那条注释
+说的是对的：整图边缘的抗锯齿覆盖必须由原始整图提供。tile 循环与 strip 循环两处都要钉，否则换一个
+缩放比就走回老路。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、
@@ -9507,6 +9607,9 @@ Harness 噪声，先记录不追。</p>
 <code>selection-background-preview</code>、<code>layout-compaction</code>。</p>
 <p>已移出本清单（2026-11-05，见 §9.7.5b / §9.7.5c）：<code>system-tray-controller</code>、
 <code>recording-export-tray</code>、<code>direct-capture-native</code>、<code>export-artifact</code>、<code>print-export-snapshot</code>。</p>
+<p>已移出本清单（2026-11-05 第二批，见 §9.7.5d）：<code>about-page</code>、<code>settings-color-commit</code>、
+<code>configuration-archive</code>、<code>selection-background-preview</code>、<code>layout-compaction</code>、
+<code>image-split-editor</code>、<code>image-split-canvas</code>、<code>image-split-export</code>、<code>overlay-frame-presenter</code>。</p>
 <p>这一组需要逐个看，但排期放在 9.7.1–9.7.5 之后：前三类是<strong>同一根因打多个套件</strong>，修一条消一片；
 这一组反过来，修一条只消一条。</p>
 <p>工具侧同时补了两条：<code>gh-ci.py</code> 的 <code>read_body()</code> 重试 + Range 分段（§9.6.65），
