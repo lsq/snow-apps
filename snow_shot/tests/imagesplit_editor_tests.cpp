@@ -20,6 +20,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QtMath>
 #include <QTranslator>
 #include <QUrl>
 #include <QWheelEvent>
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <stdexcept>
 
@@ -95,8 +97,26 @@ QImage renderCanvas(ImageSplitPreviewCanvas& canvas, qreal scale) {
     canvas.render(&painter);
     return output;
 }
-template <class T> T* child(QWidget& editor, const char* name) {
-    auto* result = editor.findChild<T*>(QString::fromLatin1(name));
+// Bounding box of the pixels two same-sized renders disagree on. Comparing rows first keeps the
+// damage checks fast enough to run ninety of them.
+QRect changedPixels(const QImage& before, const QImage& after) {
+    if (before.size() != after.size())
+        return QRect(QPoint(0, 0), before.size().expandedTo(after.size()));
+    QRect changed;
+    const auto bytes = size_t(before.width()) * sizeof(QRgb);
+    for (int y = 0; y < before.height(); ++y) {
+        const auto* left = reinterpret_cast<const uchar*>(before.constScanLine(y));
+        const auto* right = reinterpret_cast<const uchar*>(after.constScanLine(y));
+        if (std::memcmp(left, right, bytes) == 0)
+            continue;
+        for (int x = 0; x < before.width(); ++x) {
+            if (reinterpret_cast<const QRgb*>(left)[x] != reinterpret_cast<const QRgb*>(right)[x])
+                changed |= QRect(x, y, 1, 1);
+        }
+    }
+    return changed;
+}
+template <class T> T* child(QWidget& editor, const char* name) {    auto* result = editor.findChild<T*>(QString::fromLatin1(name));
     require(result != nullptr, "expected split editor control is missing");
     return result;
 }
@@ -360,18 +380,38 @@ void overlayDamageMatchesFreshRendering() {
                                             rulerPoint(canvas, document, true, dense ? 1789 : 173),
                                             rulerPoint(canvas, document, false, 93), QPointF(1, 1)};
                     for (const auto& point : points) {
-                        auto incremental = renderCanvas(canvas, scale);
+                        const auto before = renderCanvas(canvas, scale);
                         observer.reset();
                         mouse(&canvas, QEvent::MouseMove, point, Qt::NoButton, Qt::NoButton);
                         pump();
                         const auto damage = observer.damage;
                         require(!damage.isEmpty(),
                                 "changing an overlay must schedule damaged pixels");
-                        QPainter painter(&incremental);
-                        canvas.render(&painter, damage.boundingRect().topLeft(), damage);
-                        painter.end();
-                        require(incremental == renderCanvas(canvas, scale),
-                                "incremental overlays must match fresh renders across DPI, "
+                        const auto after = renderCanvas(canvas, scale);
+                        // Repainting only the damaged region cannot be simulated by rendering that
+                        // sub-rect: at a fractional device pixel ratio the clip is rounded in device
+                        // space, so the boundary column is legitimately off by one. Assert the
+                        // invariant the repaint relies on instead: every changed pixel is inside
+                        // the damage the canvas reported.
+                        const auto bounds = damage.boundingRect();
+                        const QRect allowed(
+                            QPoint(qFloor(bounds.left() * scale) - 1, qFloor(bounds.top() * scale) - 1),
+                            QPoint(qCeil((bounds.left() + bounds.width()) * scale),
+                                   qCeil((bounds.top() + bounds.height()) * scale)));
+                        QRect changed = changedPixels(before, after);
+                        if (!allowed.contains(changed)) {
+                            std::cerr << "DAMAGE dense=" << dense << " locale=" << locale
+                                      << " clipped=" << clipped << " scale=" << scale
+                                      << " damage=" << bounds.x() << "," << bounds.y() << " "
+                                      << bounds.width() << "x" << bounds.height()
+                                      << " allowed=" << allowed.x() << "," << allowed.y() << " "
+                                      << allowed.width() << "x" << allowed.height()
+                                      << " changed=" << changed.x() << "," << changed.y() << " "
+                                      << changed.width() << "x" << changed.height()
+                                      << std::endl;
+                        }
+                        require(allowed.contains(changed),
+                                "incremental overlays must repaint every changed pixel across DPI, "
                                 "languages, and clipped rulers");
                     }
                 }

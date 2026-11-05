@@ -149,6 +149,16 @@ class CropRowReader final {
                 // valid padding and preserves native pixels, palettes and bit offsets.
                 QImage converted = imageSplitCopyTile(
                     m_image, QRect(sourceX, m_region.y() + firstRow + y, width, count));
+                // A palette or mono surface cannot hold converted colours: Qt expands, transforms
+                // and re-quantises back into the same 256 (or 2) entries, so the export would keep
+                // the raw palette entry instead of the converted colour (§9.6.60). Expand first so
+                // the transform runs on real RGB samples.
+                if (!converted.isNull() && converted.depth() <= 8) {
+                    const auto space = converted.colorSpace();
+                    converted = converted.convertToFormat(QImage::Format_ARGB32);
+                    if (!converted.isNull())
+                        converted.setColorSpace(space);
+                }
                 // Preserve color-before-format conversion, including premultiplied alpha
                 // rounding. Qt's combined conversion can differ for native input formats.
                 // Non-RGB profiles retain Qt's complete color-model conversion/retagging path.

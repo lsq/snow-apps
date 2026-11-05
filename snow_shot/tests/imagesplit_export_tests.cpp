@@ -240,6 +240,15 @@ void concurrentDirectoryCreationAndNormalization() {
 
 QImage normalizedForExport(QImage image) {
     const QColorSpace srgb(QColorSpace::SRgb);
+    // Qt 5 cannot carry a colour profile through a palette source: convertedToColorSpace()
+    // expands, transforms and re-quantises (small images are skipped entirely), so the reference
+    // would keep the raw palette entry while the engine converts it. Expand first, exactly like
+    // the export funnel does; Qt 6 performs the same per-pixel work either way (§9.6.60).
+    if (image.depth() <= 8 && image.colorSpace().isValid() && image.colorSpace() != srgb) {
+        const auto space = image.colorSpace();
+        image = image.convertToFormat(QImage::Format_ARGB32);
+        image.setColorSpace(space);
+    }
     if (image.colorSpace().isValid() && image.colorSpace() != srgb)
         image = image.convertedToColorSpace(srgb);
     return image.convertToFormat(QImage::Format_RGBA8888);
