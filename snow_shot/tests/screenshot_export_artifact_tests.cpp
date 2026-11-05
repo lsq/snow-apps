@@ -2189,8 +2189,13 @@ void emptyPinnedSourceMatchesCanvasProjection() {
             std::cerr << "EMPTY-PINNED size=" << rendered.width() << "x" << rendered.height()
                       << " expected=" << expected.width() << "x" << expected.height()
                       << " pixelsEqual=" << samePixels << " spaceEqual=" << sameSpace
-                      << " actualSpace=" << rendered.colorSpace().description().toStdString()
-                      << " expectedSpace=" << expected.colorSpace().description().toStdString()
+                      // QColorSpace::description() and colorModel() are Qt 6 only, so identify
+                      // the profile structurally: sRGB and Display P3 differ in their primaries,
+                      // which is exactly what the equality test above compares.
+                      << " actualSpace=" << int(rendered.colorSpace().primaries()) << '/'
+                      << int(rendered.colorSpace().transferFunction()) << '/' << int(rendered.format())
+                      << " expectedSpace=" << int(expected.colorSpace().primaries()) << '/'
+                      << int(expected.colorSpace().transferFunction()) << '/' << int(expected.format())
                       << " dpr=" << rendered.devicePixelRatio() << "/"
                       << expected.devicePixelRatio() << std::endl;
             if (samePixels == false && rendered.size() == expected.size()) {
