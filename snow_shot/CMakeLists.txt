@@ -3236,8 +3236,12 @@ if(SNOW_SHOT_BUILD_TESTS)
              COMMAND snow-shot-settings-color-commit-tests)
     add_test(NAME snow-shot-custom-color-presets-settings-tests
              COMMAND snow-shot-settings-color-commit-tests --color-presets-only)
+    # The case now walks every colour the catalog defines (fifteen pickers, each opening a
+    # popup, committing three edits and closing). Two minutes covers a debug build on a
+    # loaded machine; the earlier thirty-second cap only fitted the ten pickers it started
+    # with and turned a passing run into a timeout.
     set_tests_properties(snow-shot-settings-color-commit-tests PROPERTIES
-        TIMEOUT 30
+        TIMEOUT 120
         ENVIRONMENT "${_SNOW_SHOT_OFFSCREEN_QPA_ENVIRONMENT}"
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>"

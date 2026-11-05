@@ -405,6 +405,11 @@ void applySnapshotReplacesConfiguration(const QTemporaryDir& temporary) {
             entry.valueKind != storage::ConfigurationValueKind::Boolean) {
             continue;
         }
+        // A key only proves "reverting announces a change" while the store still holds the
+        // schema default: on a platform whose effective default differs (a tray that is off by
+        // default, say) flipping the schema value changes nothing and no signal is due.
+        if (store.value(entry.key) != entry.defaultValue)
+            continue;
         const QJsonValue flipped = !entry.defaultValue.toBool();
         if (archivedKey.isEmpty()) {
             archivedKey = entry.key;
@@ -426,12 +431,35 @@ void applySnapshotReplacesConfiguration(const QTemporaryDir& temporary) {
         &store, &storage::ConfigurationStore::valueChanged,
         [&changedKeys](const QString& key, const QJsonValue&) { changedKeys.push_back(key); });
 
+    const auto beforeSnapshot = store.snapshot();
     require(store.applySnapshot({{archivedKey, archivedValue}}),
             "applying a snapshot must succeed");
     require(store.value(archivedKey) == archivedValue, "snapshot values must be applied");
     require(store.value(revertedKey) == storage::ConfigurationSchema::defaultValue(revertedKey),
             "keys absent from the snapshot must revert to schema defaults");
-    require(changedKeys == QStringList{revertedKey},
+    // The announcement set is exactly the raw-value diff. Deriving it instead of naming
+    // `revertedKey` alone keeps the case honest when a schema key materialises to something
+    // other than its declared default -- duplicate default shortcuts are repaired on the way
+    // through, and that repair is a real change for anyone watching the key.
+    const auto afterSnapshot = store.snapshot();
+    QStringList expectedChanges;
+    for (auto it = afterSnapshot.cbegin(); it != afterSnapshot.cend(); ++it) {
+        if (beforeSnapshot.value(it.key()) != it.value())
+            expectedChanges.push_back(it.key());
+    }
+    for (auto it = beforeSnapshot.cbegin(); it != beforeSnapshot.cend(); ++it) {
+        if (!afterSnapshot.contains(it.key()))
+            expectedChanges.push_back(it.key());
+    }
+    expectedChanges.sort();
+    changedKeys.sort();
+    if (changedKeys != expectedChanges) {
+        std::cerr << "SNAPSHOT announced=" << changedKeys.join(QLatin1Char(',')).toStdString()
+                  << " expected=" << expectedChanges.join(QLatin1Char(',')).toStdString()
+                  << std::endl;
+    }
+    require(changedKeys.contains(revertedKey) && !changedKeys.contains(archivedKey) &&
+                changedKeys == expectedChanges,
             "only settings that actually differ must announce changes");
 
     require(store.applySnapshot({{archivedKey, QStringLiteral("not a boolean")}}),

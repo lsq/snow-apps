@@ -413,9 +413,9 @@ class SystemTrayController::Impl {
         QObject::connect(notifications.get(), &NotificationService::activated, &q,
                          [this](NotificationService::Action action, const QString& path) {
                              if (action == NotificationService::Action::OpenAbout)
-                                 activateMessage(BalloonKind::Update, {});
+                                 activateMessage(BalloonKind::Update, {}, true);
                              else if (action == NotificationService::Action::OpenRecording)
-                                 activateMessage(BalloonKind::RecordingExport, path);
+                                 activateMessage(BalloonKind::RecordingExport, path, true);
                          });
         platform::SystemNotificationDelivery delivery =
             [native = notifications.get()](const platform::SystemNotificationRequest& request,
@@ -432,9 +432,9 @@ class SystemTrayController::Impl {
         QObject::connect(notifications.get(), &NotificationService::activated, &q,
                          [this](NotificationService::Action action, const QString& path) {
                              if (action == NotificationService::Action::OpenAbout)
-                                 activateMessage(BalloonKind::Update, {});
+                                 activateMessage(BalloonKind::Update, {}, true);
                              else if (action == NotificationService::Action::OpenRecording)
-                                 activateMessage(BalloonKind::RecordingExport, path);
+                                 activateMessage(BalloonKind::RecordingExport, path, true);
                          });
         const QPointer<QSystemTrayIcon> trayFallbackGuard(trayIcon);
         platform::SystemNotificationDelivery delivery =
@@ -645,14 +645,12 @@ class SystemTrayController::Impl {
         }
     }
 
-    void activateMessage(BalloonKind kind, const QString& filePath) {
-        // Windows raises balloons through the tray, so the tray switch governs
-        // them. macOS and Linux deliver independently of it, and a notification
-        // the user already received must still activate.
-#if !defined(Q_OS_MACOS) && !defined(Q_OS_LINUX)
-        if (!enabled)
+    void activateMessage(BalloonKind kind, const QString& filePath, bool detachedFromTray = false) {
+        // A tray balloon exists only while the tray is shown, so its click follows the
+        // tray switch. Platform notifications are different: they outlive the icon, the
+        // user may already have received one, and its action must still run.
+        if (!detachedFromTray && !enabled)
             return;
-#endif
         if (kind == BalloonKind::Update) {
             emit q.openAboutRequested();
         } else if (kind == BalloonKind::RecordingExport) {

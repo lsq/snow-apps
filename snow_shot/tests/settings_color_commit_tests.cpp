@@ -291,6 +291,13 @@ void settingsColorsCommitOnPopupClose(QApplication& application) {
     std::unique_ptr<SettingsPageWidget> page;
     QString colorPageId;
     int tested = 0;
+    // Derive the count from the registry: the catalog grew past the ten pickers this
+    // case used to name, and a hardcoded total turns every new colour into a failure.
+    int expectedColorFields = 0;
+    for (const auto& field : registry.fields()) {
+        if (field.kind == settings::SettingsFieldKind::Color)
+            ++expectedColorFields;
+    }
     for (const auto& field : registry.fields()) {
         if (field.kind != settings::SettingsFieldKind::Color) {
             continue;
@@ -376,7 +383,8 @@ void settingsColorsCommitOnPopupClose(QApplication& application) {
         QObject::disconnect(themeConnection);
         ++tested;
     }
-    require(tested == 10, "cover all ten settings color pickers");
+    require(tested == expectedColorFields && expectedColorFields > 0,
+            "every settings color picker the registry defines commits on popup close");
 }
 } // namespace
 

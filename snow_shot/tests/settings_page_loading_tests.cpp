@@ -1521,8 +1521,13 @@ void relatedSettingsLayoutAndKeyboard(const settings::SettingsRegistry& registry
                     require(button->accessibleName() ==
                                 definition->relatedLinks.at(index).title.translated(),
                             "each navigation button retains its translated accessible name");
+                    // Measure with the font the button actually paints with: rebuilding it from
+                    // the theme metric drops the family and letter spacing inherited through the
+                    // stylesheet, so on a platform whose default family differs the advance no
+                    // longer describes this widget.
                     QFont font = button->font();
-                    font.setPixelSize(metric.fontSize);
+                    if (font.pixelSize() <= 0)
+                        font.setPixelSize(metric.fontSize);
                     const QFontMetrics metrics(font);
                     // Glyph bearings can add a pixel or two beyond the text advance,
                     // and fontconfig's line metrics can differ from fm.height() by one.
