@@ -47,6 +47,7 @@
 
 #include <cstdlib>
 #include <algorithm>
+#include <cstdio>
 #include <iostream>
 #include <functional>
 
@@ -268,7 +269,9 @@ void verifyFullscreenSuppressionBadge(snow_shot::presentation::SystemTrayControl
     const auto connection = QObject::connect(
         &controller, &snow_shot::presentation::SystemTrayController::quickActionRequested,
         &controller, [&](Action) { ++quickActions; });
-    const auto artwork = [&]() { return snowIconPixmap(trayIcon->icon(), QSize(32, 32), 1.0).toImage(); };
+    const auto artwork = [&]() {
+        return snowIconPixmap(trayIcon->icon(), QSize(32, 32), 1.0).toImage();
+    };
     const auto verify = [&]() {
         const QImage original = artwork();
         controller.setQuickActionChecked(Action::ToggleDisableOnFocusedFullscreenWindow, true);
@@ -672,7 +675,8 @@ void verifyThemeIcons(const QTemporaryDir& directory) {
     controller.setDarkIconSelection(QStringLiteral("snow-light"));
     controller.setQuickActionChecked(GlobalShortcutAction::ToggleGlobalHotkeys, true);
     const auto requireBadge = [&]() {
-        const QColor badge = snowIconPixmap(tray->icon(), QSize(32, 32), 1.0).toImage().pixelColor(12, 12);
+        const QColor badge =
+            snowIconPixmap(tray->icon(), QSize(32, 32), 1.0).toImage().pixelColor(12, 12);
         require(badge.red() > 180 && badge.green() < 100 && badge.blue() < 100 &&
                     !tray->icon().isMask(),
                 "theme changes must preserve the disabled-shortcuts badge and icon colors");
@@ -703,6 +707,13 @@ int main(int argc, char* argv[]) {
     QCoreApplication::setApplicationName(applicationName);
 
     QApplication application(argc, argv);
+    // Qt 5 scans the image-format plugins on the first query and never rescans while
+    // that scan found anything, so the only moment this process can present a
+    // plugin-free ICO path is before it decodes any image at all (§9.7.5). Until the
+    // ICO block restores the paths nothing here needs a format outside QtGui's
+    // built-in set: the fixtures are PNG and the bundled tray icons are PNG.
+    const QStringList pluginPaths = QCoreApplication::libraryPaths();
+    QCoreApplication::setLibraryPaths({});
     verifyTrayMenuPosition();
     if (application.arguments().contains(QStringLiteral("--menu-position-only"))) {
         return 0;
@@ -871,7 +882,17 @@ int main(int argc, char* argv[]) {
         controller.showRecordingExportMessage(second);
         controller.setEnabled(false);
         controller.showRecordingExportMessage(first);
+#if !defined(Q_OS_MACOS) && !defined(Q_OS_LINUX)
+        // Windows raises the balloon through the tray, so a hidden tray is the
+        // whole point of this click: it must not open anything.
         trayIcon->messageClicked();
+#else
+        // Elsewhere the bubble is a native notification rather than a tray
+        // balloon; the activations below are the clicks. Simulating a tray click
+        // here as well would deliver the same recording twice and hide the real
+        // contract - that a notification the user already received keeps working
+        // while the tray is hidden.
+#endif
 #if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
         notifications->activated(NotificationService::Action::OpenRecording, first);
         notifications->activated(NotificationService::Action::OpenRecording, second);
@@ -980,7 +1001,8 @@ int main(int argc, char* argv[]) {
             QPainter painter(&normal);
             original.paint(&painter, QRect(0, 0, size, size));
             painter.end();
-            const QImage disabled = snowIconPixmap(trayIcon->icon(), QSize(size, size), 1.0).toImage();
+            const QImage disabled =
+                snowIconPixmap(trayIcon->icon(), QSize(size, size), 1.0).toImage();
             require(disabled.size() == QSize(size, size),
                     "badged tray icons should provide standard and high-DPI sizes");
             const QColor red = disabled.pixelColor(size * 6 / 16, size * 6 / 16);
@@ -1070,34 +1092,21 @@ int main(int argc, char* argv[]) {
                 trayIcon->property("customIconDecodedPixelSize").toSize() == QSize(256, 128),
             "a large custom image should retain no raster larger than 256 by 256");
 
-    for (const quint8 orientation : {quint8(6), quint8(8)}) {
-        // The supported suffix uses QImageReader's content detection. JPEG provides the EXIF
-        // metadata needed to exercise both quarter-turns through that existing decode path.
-        const QString orientedPath =
-            storageDirectory.filePath(QStringLiteral("oriented-icon-%1.png").arg(orientation));
-        const QByteArray encoded =
-            image_orientation_fixture::jpegWithExifOrientation(largeImage, orientation);
-        QFile oriented(orientedPath);
-        require(!encoded.isEmpty() && oriented.open(QIODevice::WriteOnly) &&
-                    oriented.write(encoded) == encoded.size(),
-                "the oriented tray image fixture should be writable");
-        oriented.close();
-        controller.setCustomIconPath(orientedPath);
-        require(
-            trayIcon->property("customIconSourcePixelSize").toSize() == QSize(512, 1024) &&
-                trayIcon->property("customIconDecodedPixelSize").toSize() == QSize(128, 256) &&
-                snowIconPixmap(trayIcon->icon(), QSize(128, 256), 1.0).size() == QSize(128, 256),
-            "tray metadata must match orientation while scaling remains bounded before rotation");
-    }
-
     const QString icoPath = QFileInfo(QString::fromUtf8(__FILE__))
                                 .dir()
                                 .absoluteFilePath(QStringLiteral("../resources/app-icon.ico"));
-    const QStringList pluginPaths = QCoreApplication::libraryPaths();
-    QCoreApplication::setLibraryPaths({});
     require(!QImageReader::supportedImageFormats().contains(QByteArrayLiteral("ico")),
             "the regression must run without a Qt ICO decoder");
     controller.setCustomIconPath(icoPath);
+    std::fprintf(stderr, "ICO DIAG path=%s exists=%d size=%lld\n", qPrintable(icoPath),
+                 int(QFile::exists(icoPath)), (long long)QFileInfo(icoPath).size());
+    std::fprintf(stderr, "ICO DIAG src=%dx%d dec=%dx%d resolved=%s\n",
+                 trayIcon->property("customIconSourcePixelSize").toSize().width(),
+                 trayIcon->property("customIconSourcePixelSize").toSize().height(),
+                 trayIcon->property("customIconDecodedPixelSize").toSize().width(),
+                 trayIcon->property("customIconDecodedPixelSize").toSize().height(),
+                 qPrintable(trayIcon->property("resolvedIconSource").toString()));
+    std::fflush(stderr);
     require(trayIcon->property("customIconSourcePixelSize").toSize() == QSize(256, 256) &&
                 trayIcon->property("customIconDecodedPixelSize").toSize() == QSize(256, 256),
             "ICO loading should select the available frame nearest 256 by 256 without Qt plugins");
@@ -1169,6 +1178,26 @@ int main(int argc, char* argv[]) {
             "a bundled fallback must preserve its colors after a custom icon fails to load");
 #endif
     QCoreApplication::setLibraryPaths(pluginPaths);
+
+    for (const quint8 orientation : {quint8(6), quint8(8)}) {
+        // The supported suffix uses QImageReader's content detection. JPEG provides the EXIF
+        // metadata needed to exercise both quarter-turns through that existing decode path.
+        const QString orientedPath =
+            storageDirectory.filePath(QStringLiteral("oriented-icon-%1.png").arg(orientation));
+        const QByteArray encoded =
+            image_orientation_fixture::jpegWithExifOrientation(largeImage, orientation);
+        QFile oriented(orientedPath);
+        require(!encoded.isEmpty() && oriented.open(QIODevice::WriteOnly) &&
+                    oriented.write(encoded) == encoded.size(),
+                "the oriented tray image fixture should be writable");
+        oriented.close();
+        controller.setCustomIconPath(orientedPath);
+        require(
+            trayIcon->property("customIconSourcePixelSize").toSize() == QSize(512, 1024) &&
+                trayIcon->property("customIconDecodedPixelSize").toSize() == QSize(128, 256) &&
+                snowIconPixmap(trayIcon->icon(), QSize(128, 256), 1.0).size() == QSize(128, 256),
+            "tray metadata must match orientation while scaling remains bounded before rotation");
+    }
 
     controller.setIconSelection(QStringLiteral("light"));
     const QString oversizedIconPath =
@@ -1588,7 +1617,12 @@ int main(int argc, char* argv[]) {
 
     // The tray New Group action runs while the application has no active or
     // visible window; its dialog must still open and complete the creation.
-    require(QApplication::activeWindow() == nullptr,
+    // A tray-only application has no window the user can focus. Under `offscreen`
+    // no window manager clears Qt's focus window when the last dialog closes, so a
+    // hidden widget stays reported as active; the portable statement is that
+    // nothing *visible* holds the focus. A dialog left on screen still fails here.
+    const QWidget* activeWindow = QApplication::activeWindow();
+    require(activeWindow == nullptr || !activeWindow->isVisible(),
             "the tray-only state should have no active window");
     // Re-resolve the action: the group mutations above rebuild the group menu,
     // so actions captured earlier may have been destroyed.

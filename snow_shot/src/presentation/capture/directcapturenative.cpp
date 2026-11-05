@@ -125,9 +125,19 @@ DirectCaptureFrame captureDirectTarget(const DirectCaptureRequest& request) {
     SnowCaptureDesktopSessionConfig config{};
     config.capture_retry_count = 1;
     config.pixel_format = SNOW_CAPTURE_PIXEL_FORMAT_BGRA8;
+#ifdef Q_OS_LINUX
+    // On X11 the session is the acquisition path, not a history feature: a window
+    // target is cut out of a desktop capture, and `snow_capture_target_screenshot`
+    // can only open a monitor. Without the session a history-disabled window
+    // capture would have nothing to read at all.
+    const bool needsDesktopSession =
+        request.historyEnabled || request.target == DirectCaptureTarget::FocusedWindow;
+#else
+    const bool needsDesktopSession = request.historyEnabled;
+#endif
     const std::unique_ptr<SnowCaptureDesktopSession,
                           decltype(&snow_capture_desktop_session_destroy)>
-        session(request.historyEnabled ? snow_capture_desktop_session_create(&config) : nullptr,
+        session(needsDesktopSession ? snow_capture_desktop_session_create(&config) : nullptr,
                 snow_capture_desktop_session_destroy);
     SnowCaptureScreenshotRequest nativeRequest{};
     nativeRequest.version = SNOW_CAPTURE_SCREENSHOT_REQUEST_VERSION;
@@ -189,19 +199,18 @@ DirectCaptureFrame captureDirectTarget(const DirectCaptureRequest& request) {
     // X11 has no window-level capture: a window target is cut out of the desktop
     // capture below, which needs every display. Only the monitor target can use
     // the one-shot API, and only when no history session will be opened anyway.
-    const bool oneShot = !request.historyEnabled &&
-                         request.target == DirectCaptureTarget::CurrentMonitor;
+    const bool oneShot =
+        !request.historyEnabled && request.target == DirectCaptureTarget::CurrentMonitor;
 #else
     const bool oneShot = !request.historyEnabled;
 #endif
     const std::unique_ptr<SnowCaptureScreenshotResult,
                           decltype(&snow_capture_screenshot_result_destroy)>
-        snapshot(oneShot ? snow_capture_target_screenshot(&targetRequest)
-                         : (session
-                                ? snow_capture_desktop_session_capture(session.get(),
-                                                                      &nativeRequest)
-                                : nullptr),
-                 snow_capture_screenshot_result_destroy);
+        snapshot(
+            oneShot ? snow_capture_target_screenshot(&targetRequest)
+                    : (session ? snow_capture_desktop_session_capture(session.get(), &nativeRequest)
+                               : nullptr),
+            snow_capture_screenshot_result_destroy);
     if (!snapshot || admission.rejected.load(std::memory_order_acquire)) {
         result.error = admission.rejected.load(std::memory_order_acquire)
                            ? QStringLiteral("resource_limit")
