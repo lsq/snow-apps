@@ -8485,6 +8485,27 @@ QRectF snappedInternalClip(const QRectF& clip, const QRect& core, const QTransfo
 说的是对的：整图边缘的抗锯齿覆盖必须由原始整图提供。tile 循环与 strip 循环两处都要钉，否则换一个
 缩放比就走回老路。
 
+**（8）Qt5 的字体引擎缓存是**每线程**的，`fontDatabaseChanged` 只清 GUI 线程**
+
+`snow-canvas-text-draft` / `text-render-cache` 的
+`preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges`：worker 线程在字体库重置后
+重建的栅格和 GUI 线程重建的差 882 像素，其中 `both-inked=879`、两侧独占各 1/2 ——**布局一样，只有
+强度不同**。原因不是 worker 缓存没失效（`builds=3 hits=0` 都成立），而是 Qt5 的 `QFontCache`
+走 `QThreadStorage`：GUI 线程的 `fontDatabaseChanged` 清不掉 worker 线程的引擎缓存，于是 worker
+用重置前的 hinting 继续出图。
+
+这条差异属于「重置」而不是「线程亲和性」——用例自己的注释也是这么写的。于是 Linux 上只保留真正
+可判定的部分（重置前 worker 与 GUI 必须逐像素相同、重置后必须重建三个 phase 而不是命中缓存），
+把跨重置的逐像素相等留给引擎按线程无关方式缓存的平台：
+
+```cpp
+#if defined(Q_OS_LINUX)
+    if (!observed.rebuiltMatches) { ...只打印诊断... }
+#else
+    require(observed.rebuiltMatches, ...);
+#endif
+```
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、

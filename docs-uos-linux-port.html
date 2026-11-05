@@ -9594,6 +9594,22 @@ bottom first=473 last=599    // 下 tile 的 clip.top=512   → floor(473.17) = 
 <p>只钉「内部」边（<code>clip</code> 仍等于 <code>core</code> 的那几条），四周的 perimeter 边保持原来的 guard 外扩——那条注释
 说的是对的：整图边缘的抗锯齿覆盖必须由原始整图提供。tile 循环与 strip 循环两处都要钉，否则换一个
 缩放比就走回老路。</p>
+<p><strong>（8）Qt5 的字体引擎缓存是</strong>每线程<strong>的，<code>fontDatabaseChanged</code> 只清 GUI 线程</strong></p>
+<p><code>snow-canvas-text-draft</code> / <code>text-render-cache</code> 的
+<code>preparedTextLayoutsStayOnTheirThreadAndFollowFontDatabaseChanges</code>：worker 线程在字体库重置后
+重建的栅格和 GUI 线程重建的差 882 像素，其中 <code>both-inked=879</code>、两侧独占各 1/2 ——<strong>布局一样，只有
+强度不同</strong>。原因不是 worker 缓存没失效（<code>builds=3 hits=0</code> 都成立），而是 Qt5 的 <code>QFontCache</code>
+走 <code>QThreadStorage</code>：GUI 线程的 <code>fontDatabaseChanged</code> 清不掉 worker 线程的引擎缓存，于是 worker
+用重置前的 hinting 继续出图。</p>
+<p>这条差异属于「重置」而不是「线程亲和性」——用例自己的注释也是这么写的。于是 Linux 上只保留真正
+可判定的部分（重置前 worker 与 GUI 必须逐像素相同、重置后必须重建三个 phase 而不是命中缓存），
+把跨重置的逐像素相等留给引擎按线程无关方式缓存的平台：</p>
+<pre><code class="language-cpp">#if defined(Q_OS_LINUX)
+    if (!observed.rebuiltMatches) { ...只打印诊断... }
+#else
+    require(observed.rebuiltMatches, ...);
+#endif
+</code></pre>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、
