@@ -411,6 +411,15 @@ QImage SnowCanvasRuntime::renderTilesToImage(const QRectF& sourceFrame,
                                       background);
 }
 
+QImage SnowCanvasRuntime::projectSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                                const QList<CanvasExportSource>& sources) {
+    // A null runtime is what `renderToImage()` does for a document with no items: it
+    // cannot synchronize a scene, so it projects the sources and returns. Going
+    // through the export surface keeps the raster scale - and therefore the sampling
+    // phase of every scaled pixel - identical to a runtime-backed export.
+    return snow_canvas_export::renderToImage(nullptr, canvasRect, outputSize, sources);
+}
+
 void snow_canvas_runtime::Access::registerClient(SnowCanvasRuntime& runtime, Client& client) {
     runtime.m_impl->registerClient(&client);
 }

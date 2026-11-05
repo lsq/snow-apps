@@ -70,6 +70,11 @@ class SnowCanvasRuntime {
                               const QSize& outputSize, const QList<CanvasExportTile>& tiles,
                               const QList<CanvasExportSource>& sources,
                               const QImage& background = {});
+    // The same projection as `renderToImage()` for a document with no items, without
+    // constructing a runtime. Callers that already know the document is empty use it
+    // to avoid a second implementation of the export raster scale.
+    static QImage projectSourcesToImage(const QRectF& canvasRect, const QSize& outputSize,
+                                        const QList<CanvasExportSource>& sources);
 
   private:
     friend struct snow_canvas_runtime::Access;

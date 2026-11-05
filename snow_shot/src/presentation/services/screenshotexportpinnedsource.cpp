@@ -4,11 +4,9 @@
 #include "snow_shot/presentation/screenshotdefaultstyles.h"
 
 #include "snow_draw_engine_qt/snow_canvas_runtime.h"
-#include "snow_draw_engine_qt/snow_canvas_image.h"
 
 #include <QList>
 #include <QColorSpace>
-#include <QPainter>
 #include <QMutex>
 #include <QMutexLocker>
 
@@ -31,19 +29,15 @@ QImage renderPinnedViewport(const ScreenshotPinnedViewportExportSource& source,
         return {};
     }
     QImage content;
+    const QList<CanvasExportSource> sources{
+        CanvasExportSource{source.backgroundImage, source.backgroundCanvasRect}};
     if (source.documentSession.isEmpty()) {
-        // An empty document needs only the source projection. Match the canvas
-        // export surface and painter hints without constructing a runtime.
-        content =
-            snowCanvasAllocateImage(source.contentPixelSize, QImage::Format_ARGB32_Premultiplied);
-        if (content.isNull())
-            return {};
-        content.fill(Qt::transparent);
-        QPainter painter(&content);
-        painter.setRenderHint(QPainter::Antialiasing);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform);
-        painter.drawImage(QRectF(QPointF(), QSizeF(source.contentPixelSize)),
-                          source.backgroundImage);
+        // An empty document has nothing to synchronize, so the export surface is
+        // only a projection. Ask the engine for it instead of hand-rolling the
+        // painter: the canvas sets a temporary raster scale, and re-deriving that
+        // here put every scaled pixel one level off from the runtime path.
+        content = SnowCanvasRuntime::projectSourcesToImage(source.backgroundCanvasRect,
+                                                           source.contentPixelSize, sources);
     } else {
         // Imported document and reconstruction pixels belong to this export.
         SnowCanvasRuntime runtime(
@@ -54,8 +48,6 @@ QImage renderPinnedViewport(const ScreenshotPinnedViewportExportSource& source,
         runtime.restoreSmartEraseSnapshot(source.smartErase);
         if (cancellation.isCancellationRequested())
             return {};
-        const QList<CanvasExportSource> sources{
-            CanvasExportSource{source.backgroundImage, source.backgroundCanvasRect}};
         content =
             runtime.renderToImage(source.backgroundCanvasRect, source.contentPixelSize, sources);
     }

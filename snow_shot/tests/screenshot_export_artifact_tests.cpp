@@ -1608,11 +1608,18 @@ void lazyResizeRowsAndRegionsPreserveFullImagePixels() {
         original.setColorSpace(QColorSpace::DisplayP3);
         const auto originalPalette = original.colorTable();
         const auto source = snow_shot::image_codec::srgbRowSource(original);
-        // Qt's const indexed color transform mutates its shallow source palette.
-        // Give the full-image reference independent metadata and retain its
-        // precision/alpha representation through color conversion.
-        const QImage converted = original.copy()
-                                     .convertedToColorSpace(QColorSpace::SRgb)
+        // Qt 5 converts a palette image's colour space by expanding to 32 bits,
+        // transforming and then re-quantising back into 8-bit indices, and it skips
+        // that entirely for small images (§9.6.60). Comparing a re-quantised palette
+        // against the row source would therefore measure the converter's index
+        // rounding rather than this code's cropping. Expand first, exactly like the
+        // product funnel does; on Qt 6 the two spellings are the same per-pixel work.
+        QImage expanded = original.copy();
+        if (expanded.depth() <= 8) {
+            expanded = expanded.convertToFormat(QImage::Format_ARGB32);
+            expanded.setColorSpace(original.colorSpace());
+        }
+        const QImage converted = expanded.convertedToColorSpace(QColorSpace::SRgb)
                                      .convertToFormat(QImage::Format_RGBA8888);
         const QRect sourceRegion(7, 13, 19, 9);
         QImage cropped(sourceRegion.size(), QImage::Format_RGBA8888);
