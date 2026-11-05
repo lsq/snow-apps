@@ -2183,7 +2183,35 @@ void emptyPinnedSourceMatchesCanvasProjection() {
                                       }),
                 "empty pinned export rejected");
         processUntil([&] { return !rendered.isNull(); });
-        require(hasSamePixels(rendered, expected) && rendered.colorSpace() == expected.colorSpace(),
+        const bool samePixels = hasSamePixels(rendered, expected);
+        const bool sameSpace = rendered.colorSpace() == expected.colorSpace();
+        if (!samePixels || !sameSpace) {
+            std::cerr << "EMPTY-PINNED size=" << rendered.width() << "x" << rendered.height()
+                      << " expected=" << expected.width() << "x" << expected.height()
+                      << " pixelsEqual=" << samePixels << " spaceEqual=" << sameSpace
+                      << " actualSpace=" << rendered.colorSpace().description().toStdString()
+                      << " expectedSpace=" << expected.colorSpace().description().toStdString()
+                      << " dpr=" << rendered.devicePixelRatio() << "/"
+                      << expected.devicePixelRatio() << std::endl;
+            if (samePixels == false && rendered.size() == expected.size()) {
+                const auto a = rendered.convertToFormat(QImage::Format_RGBA8888);
+                const auto b = expected.convertToFormat(QImage::Format_RGBA8888);
+                int differ = 0;
+                QRect bounds;
+                for (int y = 0; y < a.height(); ++y) {
+                    for (int x = 0; x < a.width(); ++x) {
+                        if (a.pixel(x, y) != b.pixel(x, y)) {
+                            ++differ;
+                            bounds |= QRect(x, y, 1, 1);
+                        }
+                    }
+                }
+                std::cerr << "EMPTY-PINNED differ=" << differ << " bounds=" << bounds.x() << ","
+                          << bounds.y() << " " << bounds.width() << "x" << bounds.height()
+                          << std::endl;
+            }
+        }
+        require(samePixels && sameSpace,
                 "empty document fast path changed projection, alpha, or color metadata");
     }
 }

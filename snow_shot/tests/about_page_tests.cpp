@@ -66,6 +66,17 @@ void flushEvents() {
     }
 }
 
+// lrelease omits a message whose translation equals its source, so the en_US catalog only carries
+// the handful of strings English overrides. A direct QTranslator lookup therefore returns a null
+// string where the application falls back to the source text; reproduce that fallback here or the
+// expectation turns into an empty string and `.arg()` complains about a missing argument.
+QString translated(const QTranslator& translator, const char* context, const char* source) {
+    const QString text = translator.translate(context, source);
+    // The fallback must decode the UTF-8 literal, not Latin-1: the About copy carries "·" and
+    // "©", which double-encode into mojibake and look identical until compared.
+    return text.isNull() ? QString::fromUtf8(source) : text;
+}
+
 template <typename T> T* child(QObject& parent, const char* name) {
     auto* result = parent.findChild<T*>(QString::fromLatin1(name));
     require(result != nullptr, name);
@@ -336,9 +347,8 @@ void projectLinksAreExplicitAccessibleAndRecoverable() {
                 "load link failure translation");
         QCoreApplication::installTranslator(&translator);
         flushEvents();
-        require(error->text() == translator
-                                     .translate("AboutPageWidget",
-                                                "Could not open the link. Open %1 in your browser.")
+        require(error->text() == translated(translator, "AboutPageWidget",
+                                            "Could not open the link. Open %1 in your browser.")
                                      .arg(links.front().second.toDisplayString()),
                 "an existing link error retranslates and preserves its destination");
         QCoreApplication::removeTranslator(&translator);
@@ -905,37 +915,37 @@ void mainNavigationSearchThemesAndLanguages() {
         QCoreApplication::installTranslator(&translator);
         flushEvents();
         require(searchSelect->placeholder() ==
-                    translator.translate("SidebarWidget", "Search Function"),
+                    translated(translator, "SidebarWidget", "Search Function"),
                 "sidebar search retranslates with each application catalog");
-        const QString translatedTitle = translator.translate("AboutPageWidget", "About Snow Shot");
+        const QString translatedTitle = translated(translator, "AboutPageWidget", "About Snow Shot");
         require(!translatedTitle.isEmpty() && page->accessibleName() == translatedTitle,
                 "an open About page retranslates immediately");
         require(child<QLabel>(*page, "aboutVersionValue")->text() ==
                     QStringLiteral(SNOW_SHOT_TEST_VERSION),
                 "language changes preserve the release version");
         require(child<adqt::widgets::AdButton>(*page, "aboutCopyVersion")->text() ==
-                    translator.translate("AboutPageWidget", "Copy version number"),
+                    translated(translator, "AboutPageWidget", "Copy version number"),
                 "copy action retranslates");
         require(child<QLabel>(*page, "aboutLicense")
                     ->text()
-                    .contains(translator.translate("AboutPageWidget",
+                    .contains(translated(translator, "AboutPageWidget",
                                                    "GNU General Public License v3.0 or later")),
                 "license details retranslate");
-        require(
+        const bool heroCopyRetranslated =
             child<QLabel>(*page, "aboutOpenSource")->text() ==
-                    translator.translate("AboutPageWidget", "Free · Open source") &&
-                child<QLabel>(*page, "aboutDescription")->text() ==
-                    translator.translate(
-                        "AboutPageWidget",
-                        "Capture, annotate, recognize text, and record your screen,\n"
-                        "so every moment on screen can be expressed clearly and shared easily."),
-            "the new hero copy retranslates immediately");
+                translated(translator, "AboutPageWidget", "Free · Open source") &&
+            child<QLabel>(*page, "aboutDescription")->text() ==
+                translated(translator,
+                           "AboutPageWidget",
+                           "Capture, annotate, recognize text, and record your screen,\n"
+                           "so every moment on screen can be expressed clearly and shared easily.");
+        require(heroCopyRetranslated, "the new hero copy retranslates immediately");
         require(child<QLabel>(*page, "aboutTagline")
                     ->text()
-                    .contains(translator.translate("AboutPageWidget", "Elegant screenshots")),
+                    .contains(translated(translator, "AboutPageWidget", "Elegant screenshots")),
                 "the two-tone headline retranslates");
         require(child<QLabel>(*page, "aboutSlogan")->text() ==
-                    translator.translate("AboutPageWidget", "Snow Shot · Make expression clearer"),
+                    translated(translator, "AboutPageWidget", "Snow Shot · Make expression clearer"),
                 "the footer slogan retranslates");
         const std::array<const char*, 6> features{"Screenshot capture", "Easy annotation",
                                                   "Text recognition",   "Screen recording",
@@ -943,15 +953,15 @@ void mainNavigationSearchThemesAndLanguages() {
         for (size_t i = 0; i < features.size(); ++i) {
             auto* label = page->findChild<QLabel*>(QStringLiteral("aboutFeatureLabel%1").arg(i));
             require(label != nullptr &&
-                        label->text() == translator.translate("AboutPageWidget", features[i]),
+                        label->text() == translated(translator, "AboutPageWidget", features[i]),
                     "every feature label retranslates");
             auto* icon = page->findChild<QLabel*>(QStringLiteral("aboutFeatureIcon%1").arg(i));
             require(icon != nullptr && !snowLabelPixmap(icon).isNull(), "every feature icon renders");
         }
         require(child<QAbstractButton>(*page, "aboutWebsite")->accessibleName() ==
-                        translator.translate("AboutPageWidget", "Official website") &&
+                        translated(translator, "AboutPageWidget", "Official website") &&
                     child<QWidget>(*page, "aboutArtwork")->accessibleName() ==
-                        translator.translate(
+                        translated(translator, 
                             "AboutPageWidget",
                             "Screenshot selection, annotation tools, and recognized text"),
                 "resource and illustration accessibility copy follows the active language");
@@ -964,9 +974,9 @@ void mainNavigationSearchThemesAndLanguages() {
             {"aboutQqGroup3", "QQ Group 3", "1037819112"},
         }};
         for (const auto& group : qqGroups) {
-            const QString title = translator.translate("AboutPageWidget", group.title);
+            const QString title = translated(translator, "AboutPageWidget", group.title);
             const QString description =
-                translator.translate("AboutPageWidget", "Discussion and support · Group No. %1")
+                translated(translator, "AboutPageWidget", "Discussion and support · Group No. %1")
                     .arg(QString::fromLatin1(group.number));
             auto* button = child<QAbstractButton>(*page, group.objectName);
             require(button->accessibleName() == title &&
