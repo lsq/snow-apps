@@ -687,10 +687,13 @@ void widgetContracts(QApplication& app) {
         auto selection = session.cloudUploadSettings();
         selection.defaultId = defaultId;
         require(session.applyCloudUploadSettings(selection), "change cloud default destination");
-        flushEvents();
-        require(originalCopy && QApplication::focusWidget() == originalCopy &&
-                    destination->currentValue().toString() == defaultId,
-                "changing cloud destination synchronizes selection without recreating rows");
+        // The draft is persisted asynchronously; the widget repaints from the accepted
+        // value that arrives with the completion notification, so one pass of the event
+        // queue can end before the selection is resynchronized.
+        waitUntil([&] { return destination->currentValue().toString() == defaultId; },
+                  "changing cloud destination synchronizes selection without recreating rows");
+        require(originalCopy && QApplication::focusWidget() == originalCopy,
+                "changing cloud destination preserves row actions and focus");
     }
     copy->click();
     waitUntil([&] { return session.cloudUploadSettings().configurations.size() == 2; },
@@ -749,7 +752,12 @@ void widgetContracts(QApplication& app) {
         gridValues.configurations.push_back(value);
     }
     require(session.applyCloudUploadSettings(gridValues), "populate three upload configurations");
-    flushEvents();
+    // Rows are rebuilt from the accepted value, which arrives after the asynchronous
+    // write completes; wait for the last one instead of assuming one event pass.
+    waitUntil([&] {
+        return widget.findChild<QWidget*>(QStringLiteral("cloudUploadRow:") +
+                                          gridValues.configurations[2].id) != nullptr;
+    }, "populate three upload configurations");
     const auto assertList = [&] {
         flushEvents();
         widget.layout()->activate();

@@ -5155,28 +5155,36 @@ void ocrGlyphDeviceCachesMatchDirectPaintingAndInvalidate() {
         const auto textBuilds = layer.glyphRasterBuildCount();
         const auto textGeometry = layer.geometrySynchronizationCount();
         const auto textBytes = layer.glyphRasterBytes();
+        const auto lineBytesBefore = layer.glyphRasterBytesForLine(1);
         presentation->setLineText(1, QStringLiteral("Changed translated text"));
         layer.updateLineText(1);
         // Three separate facts, reported separately: "cached pixels were dropped"
         // only has a meaning if this line had cached pixels to begin with, and a
-        // platform that direct-paints the line never gives it any.
+        // platform that direct-paints the line never gives it any. The per-line count
+        // decides that, so a platform whose glyph metrics or rounded clip keep the line
+        // on the direct path reports a no-op drop instead of a failed one.
         const auto geometryAfterReplacement = layer.geometrySynchronizationCount();
         const auto buildsAfterReplacement = layer.glyphRasterBuildCount();
         const auto bytesAfterReplacement = layer.glyphRasterBytes();
+        const auto lineBytesAfter = layer.glyphRasterBytesForLine(1);
         if (geometryAfterReplacement != textGeometry + 1 ||
-            buildsAfterReplacement != textBuilds || bytesAfterReplacement >= textBytes) {
+            buildsAfterReplacement != textBuilds || lineBytesAfter != 0 ||
+            (lineBytesBefore > 0 && bytesAfterReplacement >= textBytes)) {
             std::cerr << "streaming replacement: geometry " << textGeometry << "->"
                       << geometryAfterReplacement << " builds " << textBuilds << "->"
                       << buildsAfterReplacement << " glyph-bytes " << textBytes << "->"
-                      << bytesAfterReplacement << " direct-paints "
+                      << bytesAfterReplacement << " line-bytes " << lineBytesBefore << "->"
+                      << lineBytesAfter << " direct-paints "
                       << layer.glyphDirectPaintCount() << '\n';
         }
         require(geometryAfterReplacement == textGeometry + 1,
                 "a streaming replacement must reconfigure the layer geometry exactly once");
         require(buildsAfterReplacement == textBuilds,
                 "a streaming replacement must not rebuild any glyph raster");
-        require(bytesAfterReplacement < textBytes,
+        require(lineBytesAfter == 0,
                 "a streaming replacement must discard its cached pixels before painting");
+        require(lineBytesBefore == 0 || bytesAfterReplacement < textBytes,
+                "a streaming replacement must release the replaced line's share of the cache");
         compareWithDirect(1.5);
         require(renderOcrSelectionLayer(layer, 1.5) != beforeTextReplacement,
                 "a streaming replacement must display changed glyph pixels even when its new "

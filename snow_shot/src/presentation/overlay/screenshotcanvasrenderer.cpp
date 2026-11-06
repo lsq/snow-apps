@@ -899,6 +899,18 @@ class ScreenshotOcrGraphicsTextItem final : public QGraphicsItem {
     [[nodiscard]] int cursorPositionAt(const QPointF& position) const {
         return layout.cursorPositionAt(position);
     }
+    // Bytes this line currently holds in the shared glyph cache. A line that the
+    // platform cannot cache (CFF outlines, a clip whose rounded bounds differ between
+    // direct painting and an intermediate surface) holds none, and then "the
+    // replacement discarded its cached pixels" has nothing to assert.
+    [[nodiscard]] qsizetype cachedRasterBytes() const {
+        qsizetype total = 0;
+        for (const auto& entry : m_rasters)
+            total += entry.image.sizeInBytes();
+        for (const auto& entry : m_backgroundRasters)
+            total += entry.image.sizeInBytes();
+        return total;
+    }
     [[nodiscard]] QRectF boundingRect() const override {
         return layout.boundingRect();
     }
@@ -1984,6 +1996,13 @@ quint64 ScreenshotOcrTextLayer::glyphBackgroundPaintCount() const {
 qsizetype ScreenshotOcrTextLayer::glyphRasterBytes() const {
     return m_glyphRasterCache->bytes() - m_glyphRasterCache->previewBytes() -
            m_glyphRasterCache->backgroundBytes();
+}
+
+qsizetype ScreenshotOcrTextLayer::glyphRasterBytesForLine(int lineIndex) const {
+    if (lineIndex < 0 || lineIndex >= static_cast<int>(m_textItems.size()))
+        return 0;
+    const auto& item = m_textItems.at(static_cast<std::size_t>(lineIndex));
+    return item.graphicsText != nullptr ? item.graphicsText->cachedRasterBytes() : 0;
 }
 
 quint64 ScreenshotOcrTextLayer::backgroundRasterBuildCount() const {

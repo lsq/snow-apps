@@ -59,6 +59,7 @@ class ScreenshotOcrTextLayer final : public QGraphicsView {
     [[nodiscard]] quint64 backgroundRasterHitCount() const;
     [[nodiscard]] qsizetype backgroundRasterBytes() const;
     [[nodiscard]] qsizetype glyphRasterBytes() const;
+    [[nodiscard]] qsizetype glyphRasterBytesForLine(int lineIndex) const;
     [[nodiscard]] quint64 previewRasterBuildCount() const;
     [[nodiscard]] quint64 previewRasterHitCount() const;
     [[nodiscard]] qsizetype previewRasterBytes() const;

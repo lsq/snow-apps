@@ -10,40 +10,51 @@
 #include <mz_zip.h>
 #include <mz_zip_rw.h>
 #include <stdexcept>
+#include <string>
 
 namespace recognition_workbook_test {
-inline void check(bool condition) {
+// Name the failing step: every check throws the same headline, so a package that
+// fails only on one platform would otherwise report nothing actionable.
+inline void check(bool condition, const char* step) {
     if (!condition)
-        throw std::runtime_error("invalid Excel workbook package");
+        throw std::runtime_error(std::string("invalid Excel workbook package: ") + step);
 }
 
 inline QMap<QString, QByteArray> parts(const QString& path) {
     QFile file(path);
-    check(file.open(QIODevice::ReadOnly));
+    check(file.open(QIODevice::ReadOnly), "open");
     const QByteArray bytes = file.readAll();
     void* reader = mz_zip_reader_create();
-    check(reader != nullptr);
+    check(reader != nullptr, "create reader");
     const auto guard = qScopeGuard([&] { mz_zip_reader_delete(&reader); });
     check(mz_zip_reader_open_buffer(reader, reinterpret_cast<const uint8_t*>(bytes.constData()),
-                                    static_cast<int32_t>(bytes.size()), 0) == MZ_OK);
+                                    static_cast<int32_t>(bytes.size()), 0) == MZ_OK,
+          "open buffer");
     QMap<QString, QByteArray> result;
     int32_t status = mz_zip_reader_goto_first_entry(reader);
     while (status == MZ_OK) {
         mz_zip_file* info = nullptr;
-        check(mz_zip_reader_entry_get_info(reader, &info) == MZ_OK && info);
+        check(mz_zip_reader_entry_get_info(reader, &info) == MZ_OK && info, "entry info");
         const QString name = QString::fromUtf8(info->filename);
-        const int32_t length = mz_zip_reader_entry_save_buffer_length(reader);
-        check(length > 0);
-        QByteArray xml(length, Qt::Uninitialized);
-        check(mz_zip_reader_entry_save_buffer(reader, xml.data(), length) == MZ_OK);
-        QXmlStreamReader parser(xml);
-        while (!parser.atEnd())
-            parser.readNext();
-        check(!parser.hasError() && !result.contains(name));
-        result.insert(name, xml);
+        // Writers may emit explicit directory records. They carry no payload and no
+        // XML, so they are not package parts.
+        if (!name.endsWith(QLatin1Char('/'))) {
+            const int32_t length = mz_zip_reader_entry_save_buffer_length(reader);
+            check(length >= 0, "entry length");
+            QByteArray xml(length, Qt::Uninitialized);
+            if (length > 0)
+                check(mz_zip_reader_entry_save_buffer(reader, xml.data(), length) == MZ_OK,
+                      "read entry");
+            QXmlStreamReader parser(xml);
+            while (!parser.atEnd())
+                parser.readNext();
+            check(!parser.hasError(), "parse part");
+            check(!result.contains(name), "duplicate part");
+            result.insert(name, xml);
+        }
         status = mz_zip_reader_goto_next_entry(reader);
     }
-    check(status == MZ_END_OF_LIST);
+    check(status == MZ_END_OF_LIST, "walk entries");
     return result;
 }
 
@@ -55,7 +66,7 @@ struct Sheet {
 };
 
 inline Sheet sheet(const QMap<QString, QByteArray>& package) {
-    check(package.contains(QStringLiteral("xl/worksheets/sheet1.xml")));
+    check(package.contains(QStringLiteral("xl/worksheets/sheet1.xml")), "sheet part");
     QXmlStreamReader xml(package.value(QStringLiteral("xl/worksheets/sheet1.xml")));
     Sheet result;
     QString reference;
@@ -69,17 +80,18 @@ inline Sheet sheet(const QMap<QString, QByteArray>& package) {
             result.merges.append(xml.attributes().value(QStringLiteral("ref")).toString());
         if (xml.name() == QStringLiteral("c")) {
             reference = xml.attributes().value(QStringLiteral("r")).toString();
-            check(xml.attributes().value(QStringLiteral("t")) == QStringLiteral("inlineStr"));
+            check(xml.attributes().value(QStringLiteral("t")) == QStringLiteral("inlineStr"), "inline string");
             result.styles.insert(reference, xml.attributes().value(QStringLiteral("s")).toString());
         }
         if (xml.name() == QStringLiteral("t")) {
-            check(xml.attributes().value(QStringLiteral("http://www.w3.org/XML/1998/namespace"), QStringLiteral("space")) ==
-                  QStringLiteral("preserve"));
+            check(xml.attributes().value(QStringLiteral("http://www.w3.org/XML/1998/namespace"),
+                                      QStringLiteral("space")) == QStringLiteral("preserve"),
+              "preserved text");
             result.cells.insert(reference, xml.readElementText());
         }
-        check(xml.name() != QStringLiteral("f"));
+        check(xml.name() != QStringLiteral("f"), "no formula");
     }
-    check(!xml.hasError());
+    check(!xml.hasError(), "parse sheet");
     return result;
 }
 } // namespace recognition_workbook_test
