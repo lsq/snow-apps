@@ -9939,6 +9939,57 @@ const bool matches = different * 10 &lt; flat &amp;&amp; radiusDelta &lt;= 1;
   Qt 5.15.2-msvc2019 + offscreen 组合的毛病，不只是用例问题；真要碰它得在真机上用
   调试器看 libQt5Gui。本机想跑这个套件只能在 <code>scale</code> 列表里临时摘掉 1.5，<strong>别提交</strong>。</li>
 </ul>
+<h4>9.7.5q offscreen 不交接激活：<code>ApplicationDeactivate</code> 是它自己合成的</h4>
+<p><code>recording-audio-controller</code> 报「rapid source switching rejects a stale preview before
+retirement completes」。判据是三件一起成立：麦克风浮层可见、系统音频浮层不可见、预览
+monitor 没被重建（<code>creates=1 active=1</code>）。本地复现，诊断打印：</p>
+<pre><code>audio gain switch: microphone=0 system=0 creates=1 active=1 \
+  micEnabled=1 sysEnabled=1 micTrigger=1 micSurface=0
+</code></pre>
+<p>monitor 那一半全对，两个浮层全关。打开 <code>adqt.popup</code> 调试类别（<code>QT_LOGGING_RULES="adqt.popup.debug=true"</code>）
+看轨迹，关掉刚打开那个浮层的是 <strong><code>host.close detail 3</code>（= <code>ScopeDeactivated</code>）</strong>，
+而它来自 <code>QEvent::ApplicationDeactivate</code> 分支（不是 scope 窗口的 <code>WindowDeactivate</code>）：</p>
+<pre><code>visibility.applied ... anchor &quot;screenRecordingMicrophone&quot; requested true actual true
+surface.hide &quot;adpopover-surface&quot;          &lt;- 兄弟浮层的顶层工具窗口被释放
+host.close detail 3 anchor &quot;screenRecordingMicrophone&quot; requested true actual true
+visibility.transition detail 0 ... surface.hide ... applied requested false actual false
+</code></pre>
+<p>根因是平台能力：<code>scheduleScopeDeactivateClose()</code> 里本来有「浮层自己就是活动窗口就不关」
+的护栏，但 <strong>offscreen QPA 从不激活任何窗口</strong>，<code>QApplication::activeWindow()</code> 恒为 null，
+护栏永远不成立；更早的 <code>ApplicationDeactivate</code> 分支连护栏都没有。真实平台隐藏工具窗口
+会把激活交回 scope 窗口，offscreen 交给「没有」，于是每次 <code>surface.hide()</code> 都等于「用户
+切走了」。Qt6 的 offscreen 不发这一串事件，所以上游一直是绿的。</p>
+<p><strong>别去改产品</strong>：先试过在 <code>popup_interaction_host.cpp</code> 里加「平台没有活动窗口就不推断
+失活」，<code>recording-audio-controller</code> 绿了，但 <code>recording-audio-gain-popover</code> 的
+<code>application deactivation closes focused editing</code> 立刻红——那<strong>正是</strong>要靠这个事件关浮层
+的地方，等于把契约拆了。正确的位置在用例：平台能力不同就按平台分叉，并且把 monitor
+那半条契约（本用例真正的主题）保持严格：</p>
+<pre><code class="language-cpp">const bool platformActivatesWindows =
+    QGuiApplication::platformName() != QLatin1String(&quot;offscreen&quot;);
+if (!platformActivatesWindows) {
+    microphone-&gt;openAndFocus();          // 相当于「真实用户的下一拍点击」
+    QCoreApplication::processEvents();
+}
+require(microphone-&gt;popover()-&gt;isVisible() &amp;&amp; !system-&gt;popover()-&gt;isVisible() &amp;&amp;
+            audioMonitorCreates == 1 &amp;&amp; audioMonitorsActive == 1, ...);
+</code></pre>
+<p>顺带一个能让本机多跑 5 个套件的链接修法：<code>verifyToolbarCaptureExclusion*</code> 定义在
+<code>tests/toolbar_capture_exclusion_native_tests.cpp</code>，而 CMake 只在
+<code>WIN32 AND SNOW_QT_MAJOR STREQUAL "6"</code> 分支里把它加进目标（它要 <code>QRhiWidget</code>）。
+<code>screen_recording_controller_tests.cpp</code> 的调用点只用 <code>#ifdef Q_OS_WIN</code> 包着，于是
+<strong>Windows + Qt5</strong> 这套组合链接时缺两个符号：</p>
+<pre><code>error LNK2019: 无法解析的外部符号 verifyToolbarCaptureExclusionAffinity / verifyToolbarCaptureExclusion
+</code></pre>
+<p>Linux Qt5 上这段被 <code>Q_OS_WIN</code> 整个编掉，Windows Qt6 有定义，所以两边 CI 都看不见。
+调用点加 <code>QT_VERSION &gt;= QT_VERSION_CHECK(6, 4, 0)</code> 即可（那些 runner 本来也只在 Qt6 注册）。
+同名的 <code>screenshot_toolbar_remembered_tool_tests.cpp</code> 不要一起改：它那个目标还缺
+<code>applyCaptureExclusionCompositionFallback</code> / <code>setWindowExcludedFromCapture</code>（来自
+Qt6 分支加的 <code>windowchrome.cpp</code>），改一半只会把 <code>#if/#endif</code> 配平搞坏。</p>
+<p>再记一次本机踩的坑：清理磁盘时删掉 <code>build/**/*.pdb</code> 会让 <strong>PCH 一起失效</strong>
+（<code>error C2859: ... 不是创建预编译头时使用的 pdb</code>），随后只删 <code>*.pch</code> 又不触发重建
+（<code>fatal error C1083</code>，因为 <code>.pch</code> 和 <code>.obj</code> 是同一条规则产出的，<code>.obj</code> 还在 ninja 就
+认为它是最新的）。修法：<code>touch</code> 每个 <code>CMakeFiles/&lt;t&gt;.dir/cmake_pch.cxx</code> 强制重跑那条
+规则。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、

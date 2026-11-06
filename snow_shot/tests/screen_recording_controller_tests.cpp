@@ -49,6 +49,7 @@
 #include "widgets/dpi_stable_window_controller.h"
 
 #include <QApplication>
+#include <QGuiApplication>
 #include <QAbstractEventDispatcher>
 #include <QClipboard>
 #include <QMimeData>
@@ -5652,7 +5653,11 @@ int main(int argc, char** argv) {
             "test output directory must be set");
     require(RecordingSettings().setCaptureToolbarInRecording(true),
             "capture exclusion must be disabled for fake backend");
-#ifdef Q_OS_WIN
+    // The capture-exclusion helpers live in tests/toolbar_capture_exclusion_native_tests.cpp,
+    // which needs QRhiWidget and is only added to this target for Qt 6 (CMake gates it on
+    // SNOW_QT_MAJOR 6). Calling them from a Qt 5 build leaves two undefined symbols at link
+    // time; the Qt 5 port routes those runners nowhere anyway, so skip them here as well.
+#if defined(Q_OS_WIN) && QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)
     if (app.arguments().contains(QStringLiteral("--native-capture-exclusion-only")) ||
         app.arguments().contains(QStringLiteral("--native-capture-exclusion-affinity-only"))) {
         ScreenRecordingToolbarWindow toolbar;
@@ -5665,6 +5670,8 @@ int main(int argc, char** argv) {
         ApplicationStorage::instance().shutdown();
         return result;
     }
+#endif
+#ifdef Q_OS_WIN
     if (app.arguments().contains(QStringLiteral("--native-toolbar-display-only")) ||
         app.arguments().contains(QStringLiteral("--native-toolbar-ready-display-only"))) {
         const int result = recordingToolbarAcrossNativeDisplays(
@@ -5789,6 +5796,20 @@ int main(int argc, char** argv) {
             system->openAndFocus();
             microphone->openAndFocus();
             QCoreApplication::processEvents();
+            // Releasing the sibling's tool surface is what tells the scope window it was
+            // deactivated, and popovers close on that. A platform that hands activation
+            // around returns it to the toolbar, but the offscreen QPA never activates a
+            // window at all, so the release posts QEvent::ApplicationDeactivate to the
+            // application instead and the editor that was just opened closes with it
+            // (adqt.popup: host.close detail 3 = ScopeDeactivated). That is the platform
+            // answer, not the product's: reopen the way the next click would arrive, and
+            // keep the monitor contract -- the subject of this fixture -- exact.
+            const bool platformActivatesWindows =
+                QGuiApplication::platformName() != QLatin1String("offscreen");
+            if (!platformActivatesWindows) {
+                microphone->openAndFocus();
+                QCoreApplication::processEvents();
+            }
             if (!(microphone->popover()->isVisible() && !system->popover()->isVisible() &&
                   audioMonitorCreates == 1 && audioMonitorsActive == 1)) {
                 // The three conditions fail for different reasons: the popovers may have
@@ -5797,7 +5818,16 @@ int main(int argc, char** argv) {
                 std::cerr << "audio gain switch: microphone=" << microphone->popover()->isVisible()
                           << " system=" << system->popover()->isVisible()
                           << " creates=" << audioMonitorCreates.load()
-                          << " active=" << audioMonitorsActive.load() << '\n';
+                          << " active=" << audioMonitorsActive.load()
+                          << " micEnabled=" << microphone->popover()->isEnabled()
+                          << " sysEnabled=" << system->popover()->isEnabled()
+                          << " micTrigger="
+                          << (microphone->trigger() ? microphone->trigger()->isEnabled() : -1)
+                          << " micSurface="
+                          << (microphone->popover()->surfaceWidget()
+                                  ? microphone->popover()->surfaceWidget()->isVisible()
+                                  : -1)
+                          << " activates=" << platformActivatesWindows << '\n';
             }
             require(microphone->popover()->isVisible() && !system->popover()->isVisible() &&
                         audioMonitorCreates == 1 && audioMonitorsActive == 1,

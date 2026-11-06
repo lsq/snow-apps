@@ -8904,6 +8904,73 @@ const bool matches = different * 10 < flat && radiusDelta <= 1;
   Qt 5.15.2-msvc2019 + offscreen 组合的毛病，不只是用例问题；真要碰它得在真机上用
   调试器看 libQt5Gui。本机想跑这个套件只能在 `scale` 列表里临时摘掉 1.5，**别提交**。
 
+#### 9.7.5q offscreen 不交接激活：`ApplicationDeactivate` 是它自己合成的
+
+`recording-audio-controller` 报「rapid source switching rejects a stale preview before
+retirement completes」。判据是三件一起成立：麦克风浮层可见、系统音频浮层不可见、预览
+monitor 没被重建（`creates=1 active=1`）。本地复现，诊断打印：
+
+```
+audio gain switch: microphone=0 system=0 creates=1 active=1 \
+  micEnabled=1 sysEnabled=1 micTrigger=1 micSurface=0
+```
+
+monitor 那一半全对，两个浮层全关。打开 `adqt.popup` 调试类别（`QT_LOGGING_RULES="adqt.popup.debug=true"`）
+看轨迹，关掉刚打开那个浮层的是 **`host.close detail 3`（= `ScopeDeactivated`）**，
+而它来自 `QEvent::ApplicationDeactivate` 分支（不是 scope 窗口的 `WindowDeactivate`）：
+
+```
+visibility.applied ... anchor "screenRecordingMicrophone" requested true actual true
+surface.hide "adpopover-surface"          <- 兄弟浮层的顶层工具窗口被释放
+host.close detail 3 anchor "screenRecordingMicrophone" requested true actual true
+visibility.transition detail 0 ... surface.hide ... applied requested false actual false
+```
+
+根因是平台能力：`scheduleScopeDeactivateClose()` 里本来有「浮层自己就是活动窗口就不关」
+的护栏，但 **offscreen QPA 从不激活任何窗口**，`QApplication::activeWindow()` 恒为 null，
+护栏永远不成立；更早的 `ApplicationDeactivate` 分支连护栏都没有。真实平台隐藏工具窗口
+会把激活交回 scope 窗口，offscreen 交给「没有」，于是每次 `surface.hide()` 都等于「用户
+切走了」。Qt6 的 offscreen 不发这一串事件，所以上游一直是绿的。
+
+**别去改产品**：先试过在 `popup_interaction_host.cpp` 里加「平台没有活动窗口就不推断
+失活」，`recording-audio-controller` 绿了，但 `recording-audio-gain-popover` 的
+`application deactivation closes focused editing` 立刻红——那**正是**要靠这个事件关浮层
+的地方，等于把契约拆了。正确的位置在用例：平台能力不同就按平台分叉，并且把 monitor
+那半条契约（本用例真正的主题）保持严格：
+
+```cpp
+const bool platformActivatesWindows =
+    QGuiApplication::platformName() != QLatin1String("offscreen");
+if (!platformActivatesWindows) {
+    microphone->openAndFocus();          // 相当于「真实用户的下一拍点击」
+    QCoreApplication::processEvents();
+}
+require(microphone->popover()->isVisible() && !system->popover()->isVisible() &&
+            audioMonitorCreates == 1 && audioMonitorsActive == 1, ...);
+```
+
+顺带一个能让本机多跑 5 个套件的链接修法：`verifyToolbarCaptureExclusion*` 定义在
+`tests/toolbar_capture_exclusion_native_tests.cpp`，而 CMake 只在
+`WIN32 AND SNOW_QT_MAJOR STREQUAL "6"` 分支里把它加进目标（它要 `QRhiWidget`）。
+`screen_recording_controller_tests.cpp` 的调用点只用 `#ifdef Q_OS_WIN` 包着，于是
+**Windows + Qt5** 这套组合链接时缺两个符号：
+
+```
+error LNK2019: 无法解析的外部符号 verifyToolbarCaptureExclusionAffinity / verifyToolbarCaptureExclusion
+```
+
+Linux Qt5 上这段被 `Q_OS_WIN` 整个编掉，Windows Qt6 有定义，所以两边 CI 都看不见。
+调用点加 `QT_VERSION >= QT_VERSION_CHECK(6, 4, 0)` 即可（那些 runner 本来也只在 Qt6 注册）。
+同名的 `screenshot_toolbar_remembered_tool_tests.cpp` 不要一起改：它那个目标还缺
+`applyCaptureExclusionCompositionFallback` / `setWindowExcludedFromCapture`（来自
+Qt6 分支加的 `windowchrome.cpp`），改一半只会把 `#if/#endif` 配平搞坏。
+
+再记一次本机踩的坑：清理磁盘时删掉 `build/**/*.pdb` 会让 **PCH 一起失效**
+（`error C2859: ... 不是创建预编译头时使用的 pdb`），随后只删 `*.pch` 又不触发重建
+（`fatal error C1083`，因为 `.pch` 和 `.obj` 是同一条规则产出的，`.obj` 还在 ninja 就
+认为它是最新的）。修法：`touch` 每个 `CMakeFiles/<t>.dir/cmake_pch.cxx` 强制重跑那条
+规则。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、

@@ -820,6 +820,10 @@ def main():
                 print(json.dumps(report, indent=2))
             except Exception:
                 print((directory / "application.log").read_text(encoding="utf-8"))
+                # A tool call that answers `disconnected` is either a dead application or a
+                # live one that closed the socket. The log above cannot tell them apart when
+                # the process died before it could complain, so name the exit status.
+                print(f"application exit status: {app.poll()}", flush=True)
                 raise
             finally:
                 if app.poll() is None:
