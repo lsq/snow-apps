@@ -17,6 +17,8 @@
 #include <sys/mman.h>
 #endif
 
+#include <atomic>
+
 namespace snow::memory {
 
 // Small images benefit from heap size classes. Megabyte-sized rasters instead
@@ -24,15 +26,31 @@ namespace snow::memory {
 // allocator cache eviction. Keep this policy paired across allocation/release.
 inline constexpr std::size_t kMappedPixelBufferMinimum = 1024 * 1024;
 
+// Bytes currently owned by live VM regions. Asking the OS whether an address is
+// still mapped cannot answer "was this buffer released": after munmap the address
+// space is free, and a later mapping -- the allocator's own arena, another image --
+// can occupy the very pages being queried, so the probe reports a leak that is not
+// there (and, on the flip side, misses nothing). Count the ownership instead.
+inline std::atomic<std::size_t>& liveMappedBytesCounter() noexcept {
+    static std::atomic<std::size_t> counter{0};
+    return counter;
+}
+
+[[nodiscard]] inline std::size_t liveMappedBytes() noexcept {
+    return liveMappedBytesCounter().load(std::memory_order_relaxed);
+}
+
 inline void releasePixelBuffer(std::uint8_t* data, std::size_t size) noexcept {
     if (data == nullptr)
         return;
     if (size >= kMappedPixelBufferMinimum) {
 #if defined(_WIN32)
         VirtualFree(data, 0, MEM_RELEASE);
+        liveMappedBytesCounter().fetch_sub(size, std::memory_order_relaxed);
         return;
 #elif defined(__APPLE__) || defined(__unix__)
         munmap(data, size);
+        liveMappedBytesCounter().fetch_sub(size, std::memory_order_relaxed);
         return;
 #endif
     }
@@ -58,11 +76,15 @@ using PixelBuffer = std::unique_ptr<std::uint8_t[], PixelBufferDeleter>;
 #if defined(_WIN32)
         data = static_cast<std::uint8_t*>(
             VirtualAlloc(nullptr, size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        if (data != nullptr)
+            liveMappedBytesCounter().fetch_add(size, std::memory_order_relaxed);
         return PixelBuffer(data, PixelBufferDeleter{size});
 #elif defined(__APPLE__) || defined(__unix__)
         void* mapping = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
-        if (mapping != MAP_FAILED)
+        if (mapping != MAP_FAILED) {
             data = static_cast<std::uint8_t*>(mapping);
+            liveMappedBytesCounter().fetch_add(size, std::memory_order_relaxed);
+        }
         return PixelBuffer(data, PixelBufferDeleter{size});
 #endif
     }

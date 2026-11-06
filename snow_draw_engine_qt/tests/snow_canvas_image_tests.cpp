@@ -672,10 +672,11 @@ void requireEquivalent(QImage actual, const QImage& expected, const char* messag
         const auto* middle = actual.constBits() + actual.sizeInBytes() / 2;
         require(virtualMemoryMapped(middle), "large optimized results must own mapped pixels");
         actual = {};
-        if (virtualMemoryMapped(middle))
-            std::cerr << "retained: " << message << " format=" << expected.format()
-                      << " size=" << expected.width() << 'x' << expected.height() << '\n';
-        require(!virtualMemoryMapped(middle), "large optimized results must release their pages");
+        // The release itself is asserted once the fixture that produced this image is
+        // gone, at the end of formatsAndAlphaBoundariesMatchQt: this parameter is a copy
+        // that shares the buffer with the caller's temporary, so dropping it here cannot
+        // free anything and the address probe answers about the address space rather than
+        // about this buffer.
     }
 }
 
@@ -771,7 +772,7 @@ void formatsAndAlphaBoundariesMatchQt() {
             }
         }
     }
-    const QImage large = alphaFixture(QSize(1025, 1024));
+    QImage large = alphaFixture(QSize(1025, 1024));
     for (const auto format : {
              QImage::Format_RGB32, QImage::Format_ARGB32, QImage::Format_RGBA8888,
                  QImage::Format_ARGB32_Premultiplied, QImage::Format_RGBA8888_Premultiplied,
@@ -808,6 +809,14 @@ void formatsAndAlphaBoundariesMatchQt() {
                     source.depth() < 24 ? 9 : 2);
             }
     }
+    // Every large image above has now lost its last owner. These buffers own whole VM
+    // regions, so this is where the release policy itself is asserted: nothing stays
+    // mapped once the operation that produced it is over. Asserting it per image cannot
+    // work -- the comparison helper holds a copy that shares the buffer, and probing the
+    // address afterwards answers about the address space, not about this buffer.
+    large = {};
+    require(snow::memory::liveMappedBytes() == 0,
+            "large optimized results must release their pages");
 }
 
 void packedFormatsSurviveFractionalDpr() {
