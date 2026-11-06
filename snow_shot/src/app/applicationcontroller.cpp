@@ -1200,10 +1200,9 @@ class ApplicationController::Impl {
                                  sourceDone(std::move(result), error);
                              });
             const auto swatchStyle = capturePinnedColorSwatchStyle();
-            watcher->setFuture(mcp::runMcpWork(&mcpSourceWorkers, [source, clipboard, livePin,
-                                                                   liveRecognition, livePinTool,
-                                                                   params, canceled, budget,
-                                                                   rasterBytes, swatchStyle] {
+            mcp::runMcpWork(&mcpSourceWorkers, [source, clipboard, livePin, liveRecognition,
+                                                livePinTool, params, canceled, budget, rasterBytes,
+                                                swatchStyle] {
                 Source result;
                 if (canceled->load())
                     return result;
@@ -1350,7 +1349,7 @@ class ApplicationController::Impl {
                     return result;
                 }
                 return result;
-            }));
+            }).setFutureOn(watcher);
         } else
             done({}, {}, QStringLiteral("unsupported_source"));
     }

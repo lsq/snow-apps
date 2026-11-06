@@ -88,11 +88,28 @@ bool sameStorageStatus(const storage::StorageStatus& first, const storage::Stora
            first.lastHistoryError == second.lastHistoryError &&
            first.diagnostics == second.diagnostics;
 }
+// Qt 6 derives a QVariant comparison for a user type from that type's own
+// operator==. Qt 5 only does so for types whose comparator was registered by
+// hand, and otherwise answers "not equal" for every custom type. valuesEqual()
+// falls through to QVariant::operator== for the custom renderers, so two equal
+// copies of the custom AI models read as a change: every write stayed pending
+// because the backend value never compared equal to the target, the accepted
+// value never caught up with the draft, and customAiModels() kept answering an
+// empty list for a provider that was in fact configured. Register the
+// comparators Qt 6 would have derived.
+void registerSettingsVariantComparators() {
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    QMetaType::registerEqualsComparator<CustomAiModels>();
+    QMetaType::registerEqualsComparator<TextTranslationConfigurations>();
+    QMetaType::registerEqualsComparator<CloudUploadSettings>();
+#endif
+}
 } // namespace
 
 SettingsRuntimeSession::SettingsRuntimeSession(const SettingsRegistry& registry,
                                                SettingsBackend& backend, QObject* parent)
     : QObject(parent), m_registry(registry), m_backend(backend) {
+    registerSettingsVariantComparators();
     qRegisterMetaType<SettingsFieldState>();
     qRegisterMetaType<SettingsOptions>();
     qRegisterMetaType<SettingsCommandState>();

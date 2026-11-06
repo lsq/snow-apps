@@ -217,9 +217,12 @@ void runMcpApplicationTests() {
     };
     McpApplicationService service(ports);
     quint64 sequence = 0;
+    // timeoutMs is a hang guard, not a claim about the product: the one oversized
+    // history image below recompresses a 4000x4000 PNG, which needs about five
+    // seconds in an unoptimized build.
     const auto call = [&](const QString& method, QJsonObject params = {},
                           std::optional<quint64> revision = {}, QString key = {},
-                          quint64 owner = 71) {
+                          quint64 owner = 71, int timeoutMs = 5000) {
         ScreenshotMcpRequest request;
         request.connectionId = owner;
         request.requestId = QString::number(++sequence);
@@ -239,7 +242,7 @@ void runMcpApplicationTests() {
         });
         QElapsedTimer timer;
         timer.start();
-        while (!result->has_value() && timer.elapsed() < 5000) {
+        while (!result->has_value() && timer.elapsed() < timeoutMs) {
             QCoreApplication::processEvents();
             QThread::msleep(1);
         }
@@ -711,7 +714,8 @@ void runMcpApplicationTests() {
         require(largeHistory.storage.success, "publish large low-compression history fixture");
         require(call(QStringLiteral("history_get"),
                      {{QStringLiteral("history_id"), largeHistory.record.id},
-                      {QStringLiteral("include_image"), true}})
+                      {QStringLiteral("include_image"), true}},
+                     {}, {}, 71, 30000)
                         .ok &&
                     historyPng.size() <= 60 * 1024 * 1024 && historyPng != largePng,
                 "oversized stored PNG retains the previous default recompression fallback");

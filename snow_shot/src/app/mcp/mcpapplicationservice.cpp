@@ -301,7 +301,7 @@ struct McpApplicationService::Impl {
                     response = failure(request, QStringLiteral("canceled"));
                 completion(std::move(response));
             });
-        watcher->setFuture(runMcpWork(&workers, [request, canceled, work = std::move(work)] {
+        runMcpWork(&workers, [request, canceled, work = std::move(work)] {
             if (canceled->load())
                 return failure(request, QStringLiteral("canceled"));
             try {
@@ -309,7 +309,7 @@ struct McpApplicationService::Impl {
             } catch (...) {
                 return failure(request, QStringLiteral("operation_failed"));
             }
-        }));
+        }).setFutureOn(watcher);
     }
 
     void handle(const ScreenshotMcpRequest&, ScreenshotMcpServer::Completion);
@@ -1177,8 +1177,9 @@ void McpApplicationService::Impl::handle(const ScreenshotMcpRequest& request,
                             else
                                 ports.jobs->fail(id, QStringLiteral("storage_failed"));
                         });
-                    runtimeWatcher->setFuture(runMcpWork(
-                        &workers, [runtimeCompletion] { return runtimeCompletion.get(); }));
+                    runMcpWork(&workers, [runtimeCompletion] {
+                        return runtimeCompletion.get();
+                    }).setFutureOn(runtimeWatcher);
                 } else if (ok)
                     ports.jobs->complete(id, {{QStringLiteral("revision"),
                                                static_cast<qint64>(configuration().revision())}});
@@ -1186,9 +1187,9 @@ void McpApplicationService::Impl::handle(const ScreenshotMcpRequest& request,
                     ports.jobs->fail(id, conflict ? QStringLiteral("stale_revision")
                                                   : QStringLiteral("storage_failed"));
             });
-        watcher->setFuture(runMcpWork(&workers, [path = file.absoluteFilePath()] {
+        runMcpWork(&workers, [path = file.absoluteFilePath()] {
             return storage::ConfigurationArchive::read(path);
-        }));
+        }).setFutureOn(watcher);
         finish({{QStringLiteral("job_id"), id}});
     } else if (method == u"snow_shot_settings_action" || method == u"snow_shot_storage_cleanup") {
         settings::SettingsActionBinding binding;

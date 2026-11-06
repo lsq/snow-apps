@@ -8971,6 +8971,108 @@ Qt6 分支加的 `windowchrome.cpp`），改一半只会把 `#if/#endif` 配平�
 认为它是最新的）。修法：`touch` 每个 `CMakeFiles/<t>.dir/cmake_pch.cxx` 强制重跑那条
 规则。
 
+#### 9.7.5r `QVariant::operator==` 对自定义类型：Qt6 从 `operator==` 派生，Qt5 答「不等」
+
+`snow-shot-mcp-application-tests` 在 Linux CI 是 `***Exception: SegFault 0.36 sec`，本机
+Qt5 是当场断言：
+
+```
+[qt.fatal] ASSERT: "!isEmpty()" in file C:\Qt\5.15.2\msvc2019_64\include\QtCore/qvector.h, line 242
+```
+
+行 242 是 `QVector::first()` 的 `Q_ASSERT(!isEmpty())`。用
+`SNOW_PROBE_REQUIRE=1`（临时给 `require()` 加一条成功也打印的分支）把死点夹到
+`models_update` 之后，再打状态：
+
+```
+PROBE type=snow_shot::CustomAiModels valid=1 draftType=snow_shot::CustomAiModels
+      size=0 draftSize=1 phase=1 busy=1 store=1 variantEq=0 payloadEq=1 err=
+```
+
+四个数把根因钉死了：**存储里确实有 1 个模型**（`store=1`），**草稿也有**（`draftSize=1`），
+但**两个内容完全相同的 QVariant 比较结果是「不等」**（`variantEq=0`，而直接比较
+payload 是 `payloadEq=1`）。
+
+`SettingsRuntimeSession::valuesEqual()` 对自定义渲染器最终落到 `first == second`。Qt6 会
+从类型的 `operator==` 派生 `QMetaType` 的 equals 函数，Qt5 只认
+`QMetaType::registerEqualsComparator<T>()` 注册过的那几个，其余自定义类型一律答「不等」。
+于是写入路径判 `pending` 恒真：字段永远 `Pending`/`busy`，`acceptedValue` 永远停在上一个
+值（空列表），`customAiModels()` 对一个明明配置好的服务商返回空表。UI 上表现就是
+「模型列表怎么填都是空」。
+
+修法（`settingsruntimesession.cpp`，只影响 Qt5）：
+
+```cpp
+void registerSettingsVariantComparators() {
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    QMetaType::registerEqualsComparator<CustomAiModels>();
+    QMetaType::registerEqualsComparator<TextTranslationConfigurations>();
+    QMetaType::registerEqualsComparator<CloudUploadSettings>();
+#endif
+}
+```
+
+在 `SettingsRuntimeSession` 构造函数里调一次。注册后同一份探针变成
+`size=1 phase=0 busy=0 variantEq=1`，用例转绿。挑这三个类型是因为它们是
+`valuesEqual()` 唯一没有显式分支的自定义 renderer；工具栏布局、快捷键表本来就有显式比较
+（但它们的 `QVariant` 层面同样「永远不等」，会让 `SettingsFieldState::operator==` 一直报
+变化，属于同一类隐性噪声，暂不动）。
+
+反向验证：把三行 `registerEqualsComparator` 注释掉 ⇒ `--application-only` 立刻回到
+`qvector.h:242` 断言；恢复 ⇒ rc=0。
+
+#### 9.7.5s Qt5 的 `QFutureInterface` 持有结果，promise 一死 `QFutureWatcher::result()` 就读空
+
+修完上一条，同一个用例前进到配置导出，然后换一种方式死：
+
+```
+PROBE before export path=.../redacted.zip
+PROBE worker enter .../redacted.zip
+PROBE worker wrote empty=1        # 归档写成功
+PROBE wentry count=0 finished=1   # 主线程读结果：已 finished，但结果数是 0
+<Segmentation fault>
+```
+
+`background()` 用 `runMcpWork()` + `QFutureWatcher<Response>`，回调里 `watcher->result()`。
+Qt6 的 `QPromise` 把结果放在与 future 共享的状态里，promise 什么时候死都行；Qt5 的
+`SnowPromise` 是一个 `QFutureInterface<T>`，而
+
+```cpp
+QFutureInterface<T>::~QFutureInterface()
+{
+    if (!derefT())
+        resultStoreBase().template clear<T>();   // 结果就地销毁
+}
+```
+
+future 只共享 base 状态，不参与这个 typed 引用计数，所以**工作线程里那份 promise
+析构的一刻，结果就没了**；`QFuture::result()` 再去 `resultAt(0)` 就是取空容器的下标，
+`finished=1` 但 `resultCount()==0`，读到的指针是释放过的。
+
+修法（`mcpasyncwork_p.h`）：`runMcpWork()` 返回 `McpWork<Result>`（future + promise），
+主线程调用点改成
+
+```cpp
+runMcpWork(&workers, [..] { ... }).setFutureOn(watcher);
+```
+
+`setFutureOn()` 把 promise 挂到一个 parent 是 watcher 的 `McpWorkKeeper` 上，
+并用 `promise.reset()` 让 worker 在 `finish()` 之后立刻放手。这样「谁读结果」和
+「promise 活多久」是同一个对象，不再依赖线程时序。四个调用点全部改掉
+（`background()`、导入的 `runtimeWatcher`、归档读取、`applicationcontroller` 的
+`resolveMcpSource`）。
+
+一条没敢当成证据的观察：只把 promise 改成堆上 `shared_ptr`、**不**挂到 watcher 上，这次
+也是绿的。那是因为 worker 拷贝的那份要等 `QThreadPool` 销毁 runnable 才释放，恰好晚于
+主线程处理 `finished`。这属于时序运气，不是保证，所以保留 keeper。反向验证用「回到
+HEAD 版 `mcpasyncwork_p.h` + 四个调用点」做：`rc=139`，连跑三次都崩；改回来
+`--application-only` 连跑三次 + 全量一次全 rc=0。
+
+同一轮顺带修掉一个**只在 Debug 树里成立的**超时：4000×4000 的 PNG 回退重编码在本机
+未优化构建要 4874 ms，用例里 `call()` 的 5 s 挂死护栏差一点就误判成产品卡住。`call()`
+加了可选的 `timeoutMs`（默认 5000），只有那一次大图请求传 30000，注释写清是护栏不是
+产品断言。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
