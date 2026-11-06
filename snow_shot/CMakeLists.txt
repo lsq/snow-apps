@@ -3317,7 +3317,11 @@ if(SNOW_SHOT_BUILD_TESTS)
     set_tests_properties(snow-shot-settings-navigation-tests snow-shot-action-toolbar-settings-tests
         snow-shot-settings-layout-stability-tests snow-shot-tray-selection-settings-tests
         snow-shot-settings-catalog-reset-tests PROPERTIES
-        LABELS "unit" TIMEOUT 60
+        # The navigation sweep translates the reference panel into three locales at two
+        # widths per theme, which already takes a minute on an idle workstation; 60 s
+        # leaves no headroom on a loaded CI runner and reports a timeout instead of the
+        # assertion that is actually failing.
+        LABELS "unit" TIMEOUT 180
         ENVIRONMENT "${_SNOW_SHOT_OFFSCREEN_QPA_ENVIRONMENT}"
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>")
 

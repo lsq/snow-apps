@@ -20,6 +20,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QTemporaryDir>
 #include <QtMath>
 #include <QTranslator>
 #include <QUrl>
@@ -174,7 +175,11 @@ void emptyImageShowsUploadSurface() {
             "the empty action must recover after busy work");
 
     QMimeData files;
-    const auto path = QStringLiteral("C:/split.png");
+    // Build the URL from a real path: `QUrl::fromLocalFile("C:/split.png")` keeps the
+    // drive letter as a path segment on Unix, so the dropped list came back as
+    // "/C:/split.png" and never matched the hard-coded expectation.
+    QTemporaryDir dropDirectory;
+    const auto path = dropDirectory.filePath(QStringLiteral("split.png"));
     files.setUrls({QUrl::fromLocalFile(path)});
     QStringList received;
     QObject::connect(&editor, &ImageSplitEditorWidget::imageFilesDropped, &editor,
