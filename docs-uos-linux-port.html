@@ -9857,6 +9857,88 @@ QTest::mouseMove(slider, {slider-&gt;width() + 80, 16});   // 落点已经出了
 </code></pre>
 <p>顺带记两个失败的假设，省得后人再走一遍：把 tooltip 收掉（<code>QToolTip::hideText()</code>）、在
 <code>popup.close()</code> 之后再 flush，都<strong>不能</strong>消除崩溃——只有清掉解析器才行。</p>
+<h4>9.7.5p 非整数 DPR 下的像素对照量的是光栅相位，不是样式</h4>
+<p><code>image-split-editor</code> 与 <code>image-split-canvas</code> 共用 <code>sequenceNumbersUsePdfBadgeStyle()</code>：
+把画布上的序号徽章与「PDF 页上那个 QLabel 徽章」逐像素比，允许十分之一的像素有差。</p>
+<pre><code>Badge 10, font 17, scale 1.25: 127 of 1204 pixels differ
+result ordinals must match PDF badge size, corners, opacity and font in both themes at every DPI
+</code></pre>
+<p><code>127 / 1204 = 10.5%</code>，只超出预算 7 个像素；而 Windows Qt6 与本地 Windows Qt5 都绿，
+<strong>样式完全没变</strong>。原因是两个渲染器落不到同一套栅格上：</p>
+<ul>
+<li>画布：<code>SequenceNumberBadgeStyle::paint()</code> 用 <code>QRectF</code>，矩形原点是
+  <code>imageToViewport(region.topLeft()) + inset</code>，<strong>带小数</strong>；<code>drawRoundedRect</code> 与
+  <code>drawText(QRectF)</code> 都按这个小数原点抗锯齿。</li>
+<li>参考：同一份样式表交给 <code>QLabel</code>，<code>QStyle</code> 内部用 <strong>整数</strong> <code>QRect</code> 布局和绘制。</li>
+</ul>
+<p>整数 DPR 时两者的小数部分都是 0，能逐像素对上；<code>scale=1.25/1.5</code> 时每条边、每一笔
+字形都错开半个设备像素，于是<strong>整圈抗锯齿斜坡</strong>都变了颜色。这不是被测样式的问题，
+是「拿 QLabel 当独立参考」这条路在非整数 DPR 下必然付的代价。</p>
+<p>判据改成只比参考图的<strong>平坦像素</strong>（3×3 邻域亮度极差 ≤ 24），容差放到 12：</p>
+<pre><code class="language-cpp">const auto isFlat = [&amp;](int x, int y) { /* 3x3 luminance range &lt;= 24 */ };
+for (int y = bounds.top(); y &lt;= bounds.bottom(); ++y)
+    for (int x = bounds.left(); x &lt;= bounds.right(); ++x) {
+        if (!isFlat(x, y))
+            continue;                       // 相位在这里，注定对不上
+        ++flat;
+        if (withinChannel(actual, wanted, 12)) continue;
+        ++different;
+    }
+const bool matches = different * 10 &lt; flat;
+</code></pre>
+<p>平坦区恰好是「尺寸、圆角、底色透明度、字号」必须显形的地方：字号变大时字形会盖到
+参考图的平坦底上（照样算差异），alpha 变化会改动整块平地，尺寸变化会挪动块边界。</p>
+<p><strong>但圆角是个例外，必须单独测</strong>——半径变化只挪动角上那段圆弧，而圆弧在两张图里都是
+边缘、都被上面那段 <code>continue</code> 跳过了。反向验证时 <code>radius + 3</code> 的注入<strong>曾经直接通过</strong>
+（"漏判"），补一条沿对角线往里数「走到第几步才踩到填充」的探针才抓住：</p>
+<pre><code class="language-cpp">const auto cornerInset = [&amp;](const QImage&amp; image, int x, int y, int dx, int dy) {
+    for (int step = 0; step &lt;= 6; ++step)
+        if (luminance(image.pixelColor(x + dx * step, y + dy * step)) &lt; 200)
+            return step;
+    return 7;
+};
+// 四角各取一次，|actual - expected| &lt;= 1（相位最多挪一个整像素）
+const bool matches = different * 10 &lt; flat &amp;&amp; radiusDelta &lt;= 1;
+</code></pre>
+<p>反向验证（改产品 <code>SequenceNumberBadgeStyle::paint()</code>，每项单独编译运行）：</p>
+<table>
+<thead>
+<tr>
+<th>注入</th>
+<th>结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无（基线）</td>
+<td>绿，36 个组合全过</td>
+</tr>
+<tr>
+<td><code>backgroundAlpha - 40</code></td>
+<td>红：<code>421 of 421 flat pixels differ</code></td>
+</tr>
+<tr>
+<td><code>radius + 3</code></td>
+<td>红：<code>corner inset off by 2</code></td>
+</tr>
+<tr>
+<td><code>radius = 0</code></td>
+<td>红：<code>corner inset off by 2</code></td>
+</tr>
+</tbody>
+</table>
+<p>两个环境事实顺带记下来，省得下次白查：</p>
+<ul>
+<li><strong>Windows 的 <code>-platform offscreen</code> 也没有字体库</strong>，和 Linux 一样每个字形都是空白
+  （导出的 <code>badge-actual.png</code> / <code>badge-pdf.png</code> 只有圆角方块、没有数字）。所以本机
+  验不了「字号」这一条；字号走「字形盖到参考图平地」的判据，只能靠 CI 验。</li>
+<li><strong>Qt5 + 非整数 DPR + 旋转文字会崩</strong>：本地 Windows Qt5 跑 <code>--canvas-only</code> 在
+  <code>scale=1.5</code> 处静默死（<code>rc=3</code>，无输出、WerFault 触发 <code>reg.exe</code> 命中沙箱黑名单把整棵树
+  送 SIGTERM），<code>probe</code> 定位到竖标尺里 <code>rotate(-90)</code> 之后的 <code>drawText</code>。Linux Qt5 与
+  Windows Qt6 同一用例跑到 1.5/2.0 都是绿的，所以这是本地这套
+  Qt 5.15.2-msvc2019 + offscreen 组合的毛病，不只是用例问题；真要碰它得在真机上用
+  调试器看 libQt5Gui。本机想跑这个套件只能在 <code>scale</code> 列表里临时摘掉 1.5，<strong>别提交</strong>。</li>
+</ul>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、

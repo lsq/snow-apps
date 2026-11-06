@@ -17,7 +17,6 @@
 #include <QScopeGuard>
 #include <QStyle>
 #include <QTest>
-#include <QToolTip>
 #include <QTranslator>
 #include <QWindow>
 

@@ -8828,6 +8828,82 @@ slider->setSemanticStyleResolver({});
 顺带记两个失败的假设，省得后人再走一遍：把 tooltip 收掉（`QToolTip::hideText()`）、在
 `popup.close()` 之后再 flush，都**不能**消除崩溃——只有清掉解析器才行。
 
+#### 9.7.5p 非整数 DPR 下的像素对照量的是光栅相位，不是样式
+
+`image-split-editor` 与 `image-split-canvas` 共用 `sequenceNumbersUsePdfBadgeStyle()`：
+把画布上的序号徽章与「PDF 页上那个 QLabel 徽章」逐像素比，允许十分之一的像素有差。
+
+```
+Badge 10, font 17, scale 1.25: 127 of 1204 pixels differ
+result ordinals must match PDF badge size, corners, opacity and font in both themes at every DPI
+```
+
+`127 / 1204 = 10.5%`，只超出预算 7 个像素；而 Windows Qt6 与本地 Windows Qt5 都绿，
+**样式完全没变**。原因是两个渲染器落不到同一套栅格上：
+
+- 画布：`SequenceNumberBadgeStyle::paint()` 用 `QRectF`，矩形原点是
+  `imageToViewport(region.topLeft()) + inset`，**带小数**；`drawRoundedRect` 与
+  `drawText(QRectF)` 都按这个小数原点抗锯齿。
+- 参考：同一份样式表交给 `QLabel`，`QStyle` 内部用 **整数** `QRect` 布局和绘制。
+
+整数 DPR 时两者的小数部分都是 0，能逐像素对上；`scale=1.25/1.5` 时每条边、每一笔
+字形都错开半个设备像素，于是**整圈抗锯齿斜坡**都变了颜色。这不是被测样式的问题，
+是「拿 QLabel 当独立参考」这条路在非整数 DPR 下必然付的代价。
+
+判据改成只比参考图的**平坦像素**（3×3 邻域亮度极差 ≤ 24），容差放到 12：
+
+```cpp
+const auto isFlat = [&](int x, int y) { /* 3x3 luminance range <= 24 */ };
+for (int y = bounds.top(); y <= bounds.bottom(); ++y)
+    for (int x = bounds.left(); x <= bounds.right(); ++x) {
+        if (!isFlat(x, y))
+            continue;                       // 相位在这里，注定对不上
+        ++flat;
+        if (withinChannel(actual, wanted, 12)) continue;
+        ++different;
+    }
+const bool matches = different * 10 < flat;
+```
+
+平坦区恰好是「尺寸、圆角、底色透明度、字号」必须显形的地方：字号变大时字形会盖到
+参考图的平坦底上（照样算差异），alpha 变化会改动整块平地，尺寸变化会挪动块边界。
+
+**但圆角是个例外，必须单独测**——半径变化只挪动角上那段圆弧，而圆弧在两张图里都是
+边缘、都被上面那段 `continue` 跳过了。反向验证时 `radius + 3` 的注入**曾经直接通过**
+（"漏判"），补一条沿对角线往里数「走到第几步才踩到填充」的探针才抓住：
+
+```cpp
+const auto cornerInset = [&](const QImage& image, int x, int y, int dx, int dy) {
+    for (int step = 0; step <= 6; ++step)
+        if (luminance(image.pixelColor(x + dx * step, y + dy * step)) < 200)
+            return step;
+    return 7;
+};
+// 四角各取一次，|actual - expected| <= 1（相位最多挪一个整像素）
+const bool matches = different * 10 < flat && radiusDelta <= 1;
+```
+
+反向验证（改产品 `SequenceNumberBadgeStyle::paint()`，每项单独编译运行）：
+
+| 注入 | 结果 |
+| --- | --- |
+| 无（基线） | 绿，36 个组合全过 |
+| `backgroundAlpha - 40` | 红：`421 of 421 flat pixels differ` |
+| `radius + 3` | 红：`corner inset off by 2` |
+| `radius = 0` | 红：`corner inset off by 2` |
+
+两个环境事实顺带记下来，省得下次白查：
+
+- **Windows 的 `-platform offscreen` 也没有字体库**，和 Linux 一样每个字形都是空白
+  （导出的 `badge-actual.png` / `badge-pdf.png` 只有圆角方块、没有数字）。所以本机
+  验不了「字号」这一条；字号走「字形盖到参考图平地」的判据，只能靠 CI 验。
+- **Qt5 + 非整数 DPR + 旋转文字会崩**：本地 Windows Qt5 跑 `--canvas-only` 在
+  `scale=1.5` 处静默死（`rc=3`，无输出、WerFault 触发 `reg.exe` 命中沙箱黑名单把整棵树
+  送 SIGTERM），`probe` 定位到竖标尺里 `rotate(-90)` 之后的 `drawText`。Linux Qt5 与
+  Windows Qt6 同一用例跑到 1.5/2.0 都是绿的，所以这是本地这套
+  Qt 5.15.2-msvc2019 + offscreen 组合的毛病，不只是用例问题；真要碰它得在真机上用
+  调试器看 libQt5Gui。本机想跑这个套件只能在 `scale` 列表里临时摘掉 1.5，**别提交**。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、

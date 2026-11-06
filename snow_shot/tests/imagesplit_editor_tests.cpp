@@ -1308,44 +1308,86 @@ void sequenceNumbersUsePdfBadgeStyle() {
                     painter.end();
                     const QRect bounds(qFloor(origin.x() * scale), qFloor(origin.y() * scale),
                                        qCeil(size.width() * scale), qCeil(size.height() * scale));
-                    const auto close = [](const QColor& actual, const QColor& wanted) {
-                        return std::abs(actual.red() - wanted.red()) <= 8 &&
-                               std::abs(actual.green() - wanted.green()) <= 8 &&
-                               std::abs(actual.blue() - wanted.blue()) <= 8;
+                    // The badge is drawn by the canvas at the sub-pixel position the viewport
+                    // gives it, while the reference QLabel is laid out by the style on an
+                    // integer rectangle. Their edges and glyph strokes therefore sit a fraction
+                    // of a pixel apart, and every antialiased pixel between them moves with it:
+                    // on Linux at scale 1.25 that alone rewrote 127 of 1204 pixels (11%), just
+                    // past the old one-tenth budget, without a single styling difference. Phase
+                    // is not one of the properties this test is about, so compare only the flat
+                    // pixels of the reference -- fill, background, corners. That is where a
+                    // different size, border radius or background alpha has to show up, and it
+                    // cannot be produced by antialiasing.
+                    const auto luminance = [](const QColor& color) {
+                        return (color.red() * 11 + color.green() * 16 + color.blue() * 5) / 32;
+                    };
+                    const auto isFlat = [&](int x, int y) {
+                        int darkest = 255;
+                        int lightest = 0;
+                        for (int dy = -1; dy <= 1; ++dy)
+                            for (int dx = -1; dx <= 1; ++dx) {
+                                const int nx = x + dx;
+                                const int ny = y + dy;
+                                if (!expected.rect().contains(nx, ny))
+                                    continue;
+                                const int value = luminance(expected.pixelColor(nx, ny));
+                                darkest = std::min(darkest, value);
+                                lightest = std::max(lightest, value);
+                            }
+                        return lightest - darkest <= 24;
                     };
                     int different = 0;
+                    int flat = 0;
                     for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
                         for (int x = bounds.left(); x <= bounds.right(); ++x) {
-                            const auto actual = output.pixelColor(x, y);
-                            if (close(actual, expected.pixelColor(x, y)))
+                            if (!isFlat(x, y))
                                 continue;
-                            // The reference is a QLabel laid out by the style, the real
-                            // badge is drawn by the canvas. Their text baselines can land
-                            // one pixel apart when the style centres a label it also pads
-                            // with the stylesheet border, so accept a pixel that matches a
-                            // neighbouring row or column: a font size, corner or opacity
-                            // mismatch shifts the whole block, not by one pixel.
-                            bool shifted = false;
-                            for (int dy = -1; dy <= 1 && !shifted; ++dy) {
-                                for (int dx = -1; dx <= 1; ++dx) {
-                                    const int nx = x + dx;
-                                    const int ny = y + dy;
-                                    if (expected.rect().contains(nx, ny) &&
-                                        close(actual, expected.pixelColor(nx, ny))) {
-                                        shifted = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!shifted)
-                                ++different;
+                            ++flat;
+                            const auto actual = output.pixelColor(x, y);
+                            const auto wanted = expected.pixelColor(x, y);
+                            if (std::abs(actual.red() - wanted.red()) <= 12 &&
+                                std::abs(actual.green() - wanted.green()) <= 12 &&
+                                std::abs(actual.blue() - wanted.blue()) <= 12)
+                                continue;
+                            ++different;
                         }
                     }
-                    const bool matches = different < bounds.width() * bounds.height() / 10;
+                    // A radius change only moves the corner arc, and the arc is an edge in
+                    // both images, so the flat comparison above cannot see it: a +3 px radius
+                    // regression passed until this probe was added. Walking inwards along the
+                    // diagonal answers "how far does the corner stay clear" in whole pixels,
+                    // which the reference answers too, so the two are comparable within the
+                    // one pixel that phase can move.
+                    const auto cornerInset = [&](const QImage& image, int x, int y, int dx,
+                                                 int dy) {
+                        for (int step = 0; step <= 6; ++step) {
+                            const int nx = x + dx * step;
+                            const int ny = y + dy * step;
+                            if (!bounds.contains(nx, ny))
+                                break;
+                            if (luminance(image.pixelColor(nx, ny)) < 200)
+                                return step;
+                        }
+                        return 7;
+                    };
+                    int radiusDelta = 0;
+                    for (const bool left : {true, false})
+                        for (const bool top : {true, false}) {
+                            const int x = left ? bounds.left() : bounds.right();
+                            const int y = top ? bounds.top() : bounds.bottom();
+                            radiusDelta =
+                                std::max(radiusDelta,
+                                         std::abs(cornerInset(output, x, y, left ? 1 : -1,
+                                                              top ? 1 : -1) -
+                                                  cornerInset(expected, x, y, left ? 1 : -1,
+                                                              top ? 1 : -1)));
+                        }
+                    const bool matches = different * 10 < flat && radiusDelta <= 1;
                     if (!matches) {
                         std::cerr << "Badge " << label.toStdString() << ", font " << fontSize
-                                  << ", scale " << scale << ": " << different << " of "
-                                  << bounds.width() * bounds.height() << " pixels differ\n";
+                                  << ", scale " << scale << ": " << different << " of " << flat
+                                  << " flat pixels differ, corner inset off by " << radiusDelta
+                                  << '\n';
                         const auto directory =
                             qEnvironmentVariable("SNOW_TEST_IMAGE_SPLIT_CANVAS_ARTIFACT_DIR");
                         if (!directory.isEmpty()) {
