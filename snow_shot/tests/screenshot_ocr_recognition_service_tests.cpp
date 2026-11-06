@@ -391,6 +391,18 @@ void diskBackedEngineCompletesThroughTheQtWorker(bool managedRuntime = false) {
         options.proxyUrl = QStringLiteral("http://127.0.0.1:1");
         require(QFileInfo::exists(expectedProcess), "the managed OCR runtime must be staged");
 #endif
+    } else {
+        // The disk-backed contract runs the real PP-OCRv6 models. Only the release
+        // artifacts carry them (artifacts/ocr-models-*), which CI never downloads, so
+        // a checkout without that payload has nothing to execute. Name the missing
+        // asset instead of blaming the worker for dying on it.
+        for (const QString& staged : {options.detectorModelPath, options.recognizerModelPath,
+                                      options.dictionaryPath}) {
+            if (QFileInfo::exists(staged))
+                continue;
+            std::cerr << "skip: no OCR model payload staged at " << staged.toStdString() << '\n';
+            std::_Exit(77);
+        }
     }
     ScreenshotOcrRecognitionService service(options);
     require(service.liveWorkerCount() == 0,
@@ -410,9 +422,16 @@ void diskBackedEngineCompletesThroughTheQtWorker(bool managedRuntime = false) {
     const ScreenshotOcrRecognitionPort::RequestToken token =
         service.recognize(ScreenshotOcrRequest{image, QRectF(QPointF(), QSizeF(image.size()))},
                           &loop, [&](ScreenshotOcrRecognitionResult result) {
-                              require(service.processId() != 0 &&
-                                          QFileInfo(service.processPath()).canonicalFilePath() ==
-                                              QFileInfo(expectedProcess).canonicalFilePath(),
+                              // Report the two halves of "the selected runtime ran" apart:
+                              // a worker that died before the callback leaves the process
+                              // id at zero, while a worker started through a different path
+                              // leaves it set. One combined message cannot tell them apart.
+                              if (!result.error.isEmpty())
+                                  std::cerr << "OCR error: " << result.error.toStdString() << '\n';
+                              require(service.processId() != 0,
+                                      "the selected OCR runtime must still be running at completion");
+                              require(QFileInfo(service.processPath()).canonicalFilePath() ==
+                                          QFileInfo(expectedProcess).canonicalFilePath(),
                                       "OCR integration must execute the selected runtime");
                               output = std::move(result);
                               completed = true;

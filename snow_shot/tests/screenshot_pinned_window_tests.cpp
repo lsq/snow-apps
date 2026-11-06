@@ -15309,8 +15309,25 @@ void pinnedTablesSaveExcelOffscreen() {
     require(pending, "open a table edit before quick save");
     pending->setPlainText(QStringLiteral("  edited\nvalue  "));
     ScreenshotPinnedWindowTestAccess::quickSave(*window);
+    const QString workbookPath = directory.filePath(QStringLiteral("TableResult.xlsx"));
+    if (!QFileInfo::exists(workbookPath)) {
+        // "invalid Excel workbook package: open" only says the file is absent. Say why:
+        // the pin fell back to the image path (no snapshot), the snapshot carried no
+        // document, or the workbook itself was rejected.
+        const auto snapshot = session->fileExportSnapshot();
+        std::cerr << "table quick save: files=["
+                  << QDir(directory.path()).entryList(QDir::Files).join(QStringLiteral(","))
+                         .toStdString()
+                  << "] active=" << session->active() << " mode=" << int(session->mode())
+                  << " snapshot=" << snapshot.has_value()
+                  << " content=" << (snapshot ? snapshot->hasContent() : false)
+                  << " rows="
+                  << (snapshot && snapshot->table ? snapshot->table->rowCount() : -1) << '\n';
+    }
+    require(QFileInfo::exists(workbookPath),
+            "table quick save must write the workbook beside the configured output");
     const auto quickSheet = recognition_workbook_test::sheet(
-        recognition_workbook_test::parts(directory.filePath(QStringLiteral("TableResult.xlsx"))));
+        recognition_workbook_test::parts(workbookPath));
     require(quickSheet.dimension == QStringLiteral("A1:B2") &&
                 quickSheet.cells.value(QStringLiteral("A2")) ==
                     QStringLiteral("001234567890123456789") &&
@@ -17481,6 +17498,22 @@ void pinnedQuickSaveKeepsWindowAndConfiguredOutput() {
     pointer(QEvent::MouseButtonPress, QPointF(20, 20), Qt::LeftButton, Qt::LeftButton);
     pointer(QEvent::MouseMove, QPointF(100, 70), Qt::NoButton, Qt::LeftButton);
     pointer(QEvent::MouseButtonRelease, QPointF(100, 70), Qt::LeftButton, Qt::NoButton);
+    if (!canvas->canvasHistoryState().canUndo) {
+        // A synthetic drag that changes nothing has three possible reasons, and the
+        // assertion alone cannot tell them apart: the canvas never saw the gesture
+        // (geometry, visibility, tool), it saw it and refused it (interaction state),
+        // or it accepted it and only the history commit is deferred.
+        const auto state = canvas->canvasHistoryState();
+        std::cerr << "quick-save drag: canvas=" << canvas->width() << 'x' << canvas->height()
+                  << " visible=" << canvas->isVisible() << " enabled=" << canvas->isEnabled()
+                  << " interactive=" << canvas->interactionEnabled()
+                  << " tool=" << int(canvas->canvasTool())
+                  << " at=" << canvas->mapToGlobal(QPoint()).x() << ','
+                  << canvas->mapToGlobal(QPoint()).y()
+                  << " windowVisible=" << window->isVisible()
+                  << " windowActive=" << window->isActiveWindow()
+                  << " canUndo=" << state.canUndo << " canRedo=" << state.canRedo << '\n';
+    }
     require(canvas->canvasHistoryState().canUndo, "quick-save annotation was not committed");
 
     auto* quick =

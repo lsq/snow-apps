@@ -8741,6 +8741,93 @@ return result->value();
 并在按 5000ms 轮询的那一处顺带数一下 completion 次数，`> 1` 就打一行——如果以后
 产品真的重复回调，日志会直接说出来，而不是又变成一次玄学崩溃。
 
+#### 9.7.5n `QString::fromLatin1(QByteArray)` 在 Qt5 遇 NUL 就截断
+
+`collage-pdf-export` 报「long image tiles must remain on one page」，但导出的 PDF
+里明明有 31 个图像字典（30 个 `1x2048` 蓝瓦片 + 1 个 `19x23` 红图）。测试自己的诊断
+说出了真身：
+
+```
+pdf scan: bytes=1220 chars=186 dicts=1 streams=1
+tile match 0 at 41 size 7x11 length 242 valid 1
+```
+
+1220 字节的 PDF 转成 QString 只剩 186 个字符：
+
+```cpp
+// Qt 5.15.2 qstring.h:712-713
+static inline QString fromLatin1(const QByteArray &str)
+{ return str.isNull() ? QString() : fromLatin1(str.data(), qstrnlen(str.constData(), str.size())); }
+```
+
+`qstrnlen` 数到**第一个 NUL 字节**为止。Qt6 改成显式传 `str.size()`，所以同一份代码
+在 Windows/macOS 的 Qt6 上一直是绿的。PDF 由 FlateDecode 流组成，压缩数据里 0x00 遍地
+都是 ⇒ 第一个流之后的所有图像对象都被「看不见」，`pdfImages()` 只返回 1 张。
+
+凡是「把非文本字节缓冲当文本扫」的地方都要钉住长度：
+
+```cpp
+QString pdfText(const QByteArray& pdf) {
+    return QString::fromLatin1(pdf.constData(), int(pdf.size()));
+}
+```
+
+同一个陷阱也适用于 `QString::fromUtf8(bytes)`、`QString(bytes)` 这些吃 `QByteArray`
+的重载（Qt5 全部走 `qstrnlen`；Qt6 全部走 `size()`）。安全写法只有三种：显式长度、
+先 `toBase64()/toHex()`、或确认缓冲里不可能有 NUL。产品代码里现有几处（`mcpdocumentservice`
+读 UTF-8 文本、`screenshotmcprserver` 转 hex）都属后两类，无需改。
+
+判据要点：**Qt6 绿、Qt5 红，且红在「数量少了一半以上」** ⇒ 先怀疑 NUL 截断，别查正则。
+
+#### 9.7.5o `QTest::mouseMove` 走坐标不走抓取；外加一个跨函数残留的样式解析器
+
+`recording-audio-gain-popover` 报「dragging out of a hover-opened editor preserves
+gain editing」，本地 Windows Qt5 一样红——**不是 Linux 专属**，是 Qt5/Qt6 的派发差异：
+
+```cpp
+const QPoint thumb(slider->width() / 2, 16);
+QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, thumb);
+QTest::mouseMove(slider, {slider->width() + 80, 16});   // 落点已经出了控件
+```
+
+Qt5 的 `QTest` 鼠标助手按**坐标**找窗口：`x = width + 80` 那个点归弹窗后面那个 host
+窗口所有，于是移动（以及同坐标的 release）根本没送到按住不放的 slider 上。Qt6 把它交给
+持有隐式抓取的控件，所以上游一直绿。判据很好认：**控件内坐标能动、控件外坐标完全没反应**。
+
+把这类手势直投给控件（控件本来就是平台该选中的那个），应用级事件过滤器照跑，所以
+「弹窗不许被拖关」这半条契约仍然被覆盖：
+
+```cpp
+void sendMouseTo(QWidget* widget, QEvent::Type type, QPointF position, Qt::MouseButton button,
+                 Qt::MouseButtons buttons) {
+    QMouseEvent event(type, position, widget->mapToGlobal(position.toPoint()), button, buttons,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(widget, &event);
+}
+```
+
+修好它之后同一个二进制又崩在**后一个**函数里（前一个用例以前总在 `require` 处退出，
+后面的函数从来没被执行过，所以这一串问题是串着暴露的）。定位方法：在 `main` 里给每个
+函数入口各打一行，二分到「A 之后 B 崩」；再单独跑 B（加一个临时 `--x-only` 参数）——
+单独跑是绿的，说明 B 自己没问题，是 A 留下的状态。
+
+真凶是 A 装给 slider 的样式解析器：
+
+```cpp
+slider->setSemanticStyleResolver([&](const auto& ctx) { focusFeedback = ctx.focused; ... });
+```
+
+它捕获的是 A 栈帧里的局部变量，而弹窗的表面控件**比栈帧活得久**（函数返回后仍会被重绘），
+于是下一次重绘就把死栈帧当活变量读，随机崩在下一个用例里。同一个坑在 `#638 trimming`
+那类「先装观察者、函数返回」的写法里同样成立。修法是函数结束前显式卸掉：
+
+```cpp
+slider->setSemanticStyleResolver({});
+```
+
+顺带记两个失败的假设，省得后人再走一遍：把 tooltip 收掉（`QToolTip::hideText()`）、在
+`popup.close()` 之后再 flush，都**不能**消除崩溃——只有清掉解析器才行。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、

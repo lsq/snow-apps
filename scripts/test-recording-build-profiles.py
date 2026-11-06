@@ -14,8 +14,26 @@ CARGO = shutil.which('cargo')
 @unittest.skipUnless(CARGO, 'Cargo is required')
 class RecordingBuildProfiles(unittest.TestCase):
     def cargo(self, *arguments):
-        result = subprocess.run([CARGO, *arguments], cwd=ROOT, capture_output=True,
-                                text=True, timeout=60)
+        """Run cargo, preferring the local cache and falling back to the network.
+
+        `--offline` keeps the contract hermetic, but a resolve still has to find
+        every package in the lockfile -- including wasm-only crates such as js-sys
+        that no host build ever downloads. A cache seeded by building one target
+        therefore cannot answer for the whole graph, and the failure says
+        "attempting to make an HTTP request, but --offline was specified" instead
+        of anything about features. Retry the same resolve once without the flag
+        before calling the environment broken.
+        """
+        commands = [(CARGO, *arguments)]
+        if '--offline' in arguments:
+            commands.append((CARGO, *[argument for argument in arguments
+                                      if argument != '--offline']))
+        result = None
+        for command in commands:
+            result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                                    timeout=300)
+            if result.returncode == 0:
+                return result.stdout
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
 

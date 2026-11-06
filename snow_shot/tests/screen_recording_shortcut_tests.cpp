@@ -359,6 +359,19 @@ void recordingSelectionEditsAnnotationsAndPreservesPassThrough() {
             "Delete must remove the selected recording annotation");
     auto* reset =
         palette.findChild<adqt::widgets::AdButton*>(QStringLiteral("screenshotResetCanvasButton"));
+    if (reset == nullptr) {
+        // The reset control is built with the rest of the palette, so "missing" always
+        // means the palette was rendered in another state. Name that state, otherwise
+        // the next reader has to guess which click left it there.
+        QStringList present;
+        for (auto* button : palette.findChildren<adqt::widgets::AdButton*>())
+            present.append(button->objectName());
+        std::cerr << "reset button missing: buttons=["
+                  << present.join(QStringLiteral(",")).toStdString()
+                  << "] exportSettings=" << palette.recordingExportSettingsVisible()
+                  << " tool=" << palette.activeTool().has_value()
+                  << " selection=" << int(canvas.canvasStyleToolbarState().source) << '\n';
+    }
     require(reset != nullptr, "recording selection should expose canvas reset");
     for (const bool selected : {false, true}) {
         drawRectangle(canvas);

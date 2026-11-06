@@ -71,8 +71,17 @@ QImage flattened(QImage image) {
     return image;
 }
 
+// Qt5's QString::fromLatin1(const QByteArray&) measures the input with qstrnlen
+// (qstring.h:713), so it stops at the first NUL byte. A PDF built from FlateDecode
+// streams is full of NULs, and a truncated view silently hides every image that
+// follows the first compressed stream. Qt6 passes the real size instead. Always
+// pin the length explicitly when a byte buffer is not known to be NUL-free.
+QString pdfText(const QByteArray& pdf) {
+    return QString::fromLatin1(pdf.constData(), int(pdf.size()));
+}
+
 QVector<QImage> pdfImages(const QByteArray& pdf) {
-    const QString text = QString::fromLatin1(pdf);
+    const QString text = pdfText(pdf);
     QRegularExpression expression(QStringLiteral(
         "/Subtype /Image[^>]*?/Width (\\d+) /Height (\\d+)[^>]*?/Length (\\d+) >>\\nstream\\n"));
     auto matches = expression.globalMatch(text);
@@ -301,6 +310,12 @@ void combinedOrderAndGeometry(const QString& directory) {
                                      : "/MediaBox [0 0 841.88976378 595.27559055]";
         require(pdf.count(media) == 2, "all pages must share selected physical paper dimensions");
         const auto images = pdfImages(pdf);
+        if (qEnvironmentVariableIsSet("SNOW_TEST_COLLAGE_PDF_DUMP")) {
+            QFile dump(QDir(qEnvironmentVariable("SNOW_TEST_COLLAGE_PDF_DUMP"))
+                           .filePath(QStringLiteral("collage-debug.pdf")));
+            if (dump.open(QIODevice::WriteOnly))
+                dump.write(pdf);
+        }
         if (!(images.size() == 31 && images.first().width() == 1 &&
               images.first().pixelColor(0, 0) == QColor(Qt::blue) &&
               images.last().pixelColor(0, 0) == QColor(Qt::red))) {
@@ -356,7 +371,7 @@ void imageSizedPages(const QString& directory) {
         QRegularExpression media(QStringLiteral("/MediaBox \\[0 0 ([0-9.]+) ([0-9.]+)\\]"));
         QRegularExpression placement(
             QStringLiteral("q\\n([0-9.]+) 0 0 ([0-9.]+) ([0-9.]+) ([0-9.]+) cm\\n"));
-        const QString text = QString::fromLatin1(pdf);
+        const QString text = pdfText(pdf);
         auto pages = media.globalMatch(text);
         auto images = placement.globalMatch(text);
         for (const auto size : expected) {
@@ -587,7 +602,7 @@ void positiveTinyPaperKeepsNonzeroGeometry(const QString& directory) {
             "valid positive paper dimensions must export even below fixed decimal precision");
     const auto pdf = read(path);
     structure(pdf, 1);
-    const QString text = QString::fromLatin1(pdf);
+    const QString text = pdfText(pdf);
     const auto media =
         QRegularExpression(QStringLiteral("/MediaBox \\[0 0 ([0-9.]+) ([0-9.]+)\\]")).match(text);
     const auto placement =

@@ -9799,6 +9799,64 @@ return result-&gt;value();
 </code></pre>
 <p>并在按 5000ms 轮询的那一处顺带数一下 completion 次数，<code>&gt; 1</code> 就打一行——如果以后
 产品真的重复回调，日志会直接说出来，而不是又变成一次玄学崩溃。</p>
+<h4>9.7.5n <code>QString::fromLatin1(QByteArray)</code> 在 Qt5 遇 NUL 就截断</h4>
+<p><code>collage-pdf-export</code> 报「long image tiles must remain on one page」，但导出的 PDF
+里明明有 31 个图像字典（30 个 <code>1x2048</code> 蓝瓦片 + 1 个 <code>19x23</code> 红图）。测试自己的诊断
+说出了真身：</p>
+<pre><code>pdf scan: bytes=1220 chars=186 dicts=1 streams=1
+tile match 0 at 41 size 7x11 length 242 valid 1
+</code></pre>
+<p>1220 字节的 PDF 转成 QString 只剩 186 个字符：</p>
+<pre><code class="language-cpp">// Qt 5.15.2 qstring.h:712-713
+static inline QString fromLatin1(const QByteArray &amp;str)
+{ return str.isNull() ? QString() : fromLatin1(str.data(), qstrnlen(str.constData(), str.size())); }
+</code></pre>
+<p><code>qstrnlen</code> 数到<strong>第一个 NUL 字节</strong>为止。Qt6 改成显式传 <code>str.size()</code>，所以同一份代码
+在 Windows/macOS 的 Qt6 上一直是绿的。PDF 由 FlateDecode 流组成，压缩数据里 0x00 遍地
+都是 ⇒ 第一个流之后的所有图像对象都被「看不见」，<code>pdfImages()</code> 只返回 1 张。</p>
+<p>凡是「把非文本字节缓冲当文本扫」的地方都要钉住长度：</p>
+<pre><code class="language-cpp">QString pdfText(const QByteArray&amp; pdf) {
+    return QString::fromLatin1(pdf.constData(), int(pdf.size()));
+}
+</code></pre>
+<p>同一个陷阱也适用于 <code>QString::fromUtf8(bytes)</code>、<code>QString(bytes)</code> 这些吃 <code>QByteArray</code>
+的重载（Qt5 全部走 <code>qstrnlen</code>；Qt6 全部走 <code>size()</code>）。安全写法只有三种：显式长度、
+先 <code>toBase64()/toHex()</code>、或确认缓冲里不可能有 NUL。产品代码里现有几处（<code>mcpdocumentservice</code>
+读 UTF-8 文本、<code>screenshotmcprserver</code> 转 hex）都属后两类，无需改。</p>
+<p>判据要点：<strong>Qt6 绿、Qt5 红，且红在「数量少了一半以上」</strong> ⇒ 先怀疑 NUL 截断，别查正则。</p>
+<h4>9.7.5o <code>QTest::mouseMove</code> 走坐标不走抓取；外加一个跨函数残留的样式解析器</h4>
+<p><code>recording-audio-gain-popover</code> 报「dragging out of a hover-opened editor preserves
+gain editing」，本地 Windows Qt5 一样红——<strong>不是 Linux 专属</strong>，是 Qt5/Qt6 的派发差异：</p>
+<pre><code class="language-cpp">const QPoint thumb(slider-&gt;width() / 2, 16);
+QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, thumb);
+QTest::mouseMove(slider, {slider-&gt;width() + 80, 16});   // 落点已经出了控件
+</code></pre>
+<p>Qt5 的 <code>QTest</code> 鼠标助手按<strong>坐标</strong>找窗口：<code>x = width + 80</code> 那个点归弹窗后面那个 host
+窗口所有，于是移动（以及同坐标的 release）根本没送到按住不放的 slider 上。Qt6 把它交给
+持有隐式抓取的控件，所以上游一直绿。判据很好认：<strong>控件内坐标能动、控件外坐标完全没反应</strong>。</p>
+<p>把这类手势直投给控件（控件本来就是平台该选中的那个），应用级事件过滤器照跑，所以
+「弹窗不许被拖关」这半条契约仍然被覆盖：</p>
+<pre><code class="language-cpp">void sendMouseTo(QWidget* widget, QEvent::Type type, QPointF position, Qt::MouseButton button,
+                 Qt::MouseButtons buttons) {
+    QMouseEvent event(type, position, widget-&gt;mapToGlobal(position.toPoint()), button, buttons,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(widget, &amp;event);
+}
+</code></pre>
+<p>修好它之后同一个二进制又崩在<strong>后一个</strong>函数里（前一个用例以前总在 <code>require</code> 处退出，
+后面的函数从来没被执行过，所以这一串问题是串着暴露的）。定位方法：在 <code>main</code> 里给每个
+函数入口各打一行，二分到「A 之后 B 崩」；再单独跑 B（加一个临时 <code>--x-only</code> 参数）——
+单独跑是绿的，说明 B 自己没问题，是 A 留下的状态。</p>
+<p>真凶是 A 装给 slider 的样式解析器：</p>
+<pre><code class="language-cpp">slider-&gt;setSemanticStyleResolver([&amp;](const auto&amp; ctx) { focusFeedback = ctx.focused; ... });
+</code></pre>
+<p>它捕获的是 A 栈帧里的局部变量，而弹窗的表面控件<strong>比栈帧活得久</strong>（函数返回后仍会被重绘），
+于是下一次重绘就把死栈帧当活变量读，随机崩在下一个用例里。同一个坑在 <code>#638 trimming</code>
+那类「先装观察者、函数返回」的写法里同样成立。修法是函数结束前显式卸掉：</p>
+<pre><code class="language-cpp">slider-&gt;setSemanticStyleResolver({});
+</code></pre>
+<p>顺带记两个失败的假设，省得后人再走一遍：把 tooltip 收掉（<code>QToolTip::hideText()</code>）、在
+<code>popup.close()</code> 之后再 flush，都<strong>不能</strong>消除崩溃——只有清掉解析器才行。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、

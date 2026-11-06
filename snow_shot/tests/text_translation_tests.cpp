@@ -312,7 +312,25 @@ void queueAndJobs() {
         std::unique_ptr<translation::TranslationJob> second(service.createJob(texts, nullptr));
         first->start();
         second->start();
-        waitUntil([&] { return server.requests.size() == limit; }, "parallel requests start");
+        {
+            // Same wait as waitUntil(), unwound here so a timeout can report how far the
+            // two jobs actually got: nothing dispatched, or dispatched and queued behind a
+            // ceiling that never releases.
+            QElapsedTimer parallel;
+            parallel.start();
+            while (server.requests.size() != limit && parallel.elapsed() < 5000) {
+                flushEvents();
+                QThread::msleep(1);
+            }
+            if (server.requests.size() != limit) {
+                std::cerr << "parallel requests: limit=" << limit
+                          << " arrived=" << server.requests.size()
+                          << " active=" << SnowShotApiClientTestAccess::requests(client)
+                          << " queued=" << SnowShotApiClientTestAccess::queued(client)
+                          << " busy=" << first->busy() << ',' << second->busy() << '\n';
+            }
+            require(server.requests.size() == limit, "parallel requests start");
+        }
         require(SnowShotApiClientTestAccess::requests(client) -
                         SnowShotApiClientTestAccess::queued(client) ==
                     limit,

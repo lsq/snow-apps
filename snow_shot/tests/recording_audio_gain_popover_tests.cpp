@@ -17,6 +17,7 @@
 #include <QScopeGuard>
 #include <QStyle>
 #include <QTest>
+#include <QToolTip>
 #include <QTranslator>
 #include <QWindow>
 
@@ -38,6 +39,20 @@ void require(bool condition, const char* message) {
 void flush() {
     QCoreApplication::sendPostedEvents();
     QCoreApplication::processEvents();
+}
+
+// Qt 5 routes QTest's mouse helpers by the coordinates themselves: a position outside the
+// widget belongs to whichever window owns that point, so a move or a release that leaves
+// the editor never reaches the widget holding the press (here the host behind the popup
+// gets them instead). Qt 6 hands them to the grabbing widget, which is why only the ported
+// build loses the drag. Deliver those gestures to the widget directly -- it is the widget
+// the platform would have picked, and application-wide event filters still run, so the
+// "editor must stay open" half of each contract stays covered.
+void sendMouseTo(QWidget* widget, QEvent::Type type, QPointF position, Qt::MouseButton button,
+                 Qt::MouseButtons buttons) {
+    QMouseEvent event(type, position, widget->mapToGlobal(position.toPoint()), button, buttons,
+                      Qt::NoModifier);
+    QCoreApplication::sendEvent(widget, &event);
 }
 
 class EventObserver final : public QObject {
@@ -333,13 +348,23 @@ void hoverSliderDragKeepsTheEditorOpen() {
     // Keep the offscreen hover fixture in its owner until the slider is pressed.
     host.activateWindow();
     host.setFocus();
-    QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, slider->rect().center());
-    QTest::mouseMove(slider, {slider->width() + 80, slider->height() / 2});
+    const QPointF outside(slider->width() + 80, slider->height() / 2.0);
+    sendMouseTo(slider, QEvent::MouseButtonPress, slider->rect().center(), Qt::LeftButton,
+                Qt::LeftButton);
+    sendMouseTo(slider, QEvent::MouseMove, outside, Qt::NoButton, Qt::LeftButton);
     QTest::qWait(320);
+    if (!(slider->sliderDown() && popup.popover()->isVisible() && popup.gainDb() == 24)) {
+        // A drag that misses says which part missed: the press never latched the thumb,
+        // the popover closed on the move, or the travel never reached the top of the scale.
+        std::cerr << "hover drag: down=" << slider->sliderDown()
+                  << " visible=" << popup.popover()->isVisible()
+                  << " gain=" << popup.gainDb() << " value=" << slider->value()
+                  << " slider=" << slider->width() << 'x' << slider->height()
+                  << " enabled=" << slider->isEnabled() << '\n';
+    }
     require(slider->sliderDown() && popup.popover()->isVisible() && popup.gainDb() == 24,
             "dragging out of a hover-opened editor preserves gain editing");
-    QTest::mouseRelease(slider, Qt::LeftButton, Qt::NoModifier,
-                        {slider->width() + 80, slider->height() / 2});
+    sendMouseTo(slider, QEvent::MouseButtonRelease, outside, Qt::LeftButton, Qt::NoButton);
     QTest::qWait(320);
     require(popup.popover()->isVisible(), "pointer editing remains open after the drag ends");
     QTest::mouseClick(&host, Qt::LeftButton, Qt::NoModifier, {650, 450});
@@ -400,13 +425,14 @@ void hoverDragAndDeactivateKeepInteractionSafe(QApplication& app) {
             "processed level ticks never relayout the editor or slider");
 
     const QPoint thumb(slider->width() / 2, 16);
-    QTest::mousePress(slider, Qt::LeftButton, Qt::NoModifier, thumb);
+    sendMouseTo(slider, QEvent::MouseButtonPress, thumb, Qt::LeftButton, Qt::LeftButton);
     flush();
     auto* tooltip = slider->findChild<adqt::widgets::AdTooltip*>();
     require(slider->sliderDown() && tooltip && tooltip->isVisible() &&
                 tooltip->text() == QStringLiteral("0 dB"),
             "pressing the thumb opens its gain tooltip");
-    QTest::mouseMove(slider, {slider->width() + 80, 16});
+    sendMouseTo(slider, QEvent::MouseMove, QPointF(slider->width() + 80, 16), Qt::NoButton,
+                Qt::LeftButton);
     QTest::qWait(320);
     require(popup.popover()->isVisible() && popup.gainDb() == 24 && tooltip->isVisible() &&
                 tooltip->text() == QStringLiteral("+24 dB"),
@@ -415,12 +441,13 @@ void hoverDragAndDeactivateKeepInteractionSafe(QApplication& app) {
     flush();
     require(tooltip->text() == QStringLiteral("+24 dB"),
             "live audio updates during dragging do not replace the gain tooltip");
-    QTest::mouseMove(slider, {0, 16});
+    sendMouseTo(slider, QEvent::MouseMove, QPointF(0, 16), Qt::NoButton, Qt::LeftButton);
     flush();
     require(popup.gainDb() == -24 && tooltip->isVisible() &&
                 tooltip->text() == QStringLiteral("-24 dB"),
             "dragging to the minimum shows negative gain");
-    QTest::mouseRelease(slider, Qt::LeftButton, Qt::NoModifier, {slider->width() + 80, 16});
+    sendMouseTo(slider, QEvent::MouseButtonRelease, QPointF(slider->width() + 80, 16), Qt::LeftButton,
+                Qt::NoButton);
     QTest::qWait(320);
     require(popup.popover()->isVisible() && slider->hasFocus(),
             "focused gain editing remains open after pointer departure");
@@ -489,6 +516,8 @@ void pointerEditingClearsKeyboardFocusFeedback() {
     flush();
     require(tooltip->isVisible() && focusFeedback && popup.gainDb() == 24,
             "keyboard focus feedback returns even when a boundary key leaves gain unchanged");
+    slider->setSemanticStyleResolver({});
+    flush();
 }
 
 #ifdef Q_OS_WIN
@@ -719,7 +748,7 @@ int main(int argc, char** argv) {
     }
 #endif
     if (app.arguments().contains(QStringLiteral("--pointer-feedback-only"))) {
-        pointerEditingClearsKeyboardFocusFeedback();
+    pointerEditingClearsKeyboardFocusFeedback();
         return 0;
     }
     gainEditorsPreferAboveAndAvoidTopEdge();

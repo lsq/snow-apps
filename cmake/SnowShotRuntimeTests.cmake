@@ -73,6 +73,7 @@ function(snow_shot_add_ocr_runtime_tests)
     )
     set_tests_properties(snow-shot-ocr-cpu-recognition-service-tests PROPERTIES
         TIMEOUT 120
+        SKIP_RETURN_CODE 77
         ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>"
     )

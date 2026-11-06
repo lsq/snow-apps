@@ -104,6 +104,17 @@ QByteArray waitForHttpRequest(QTcpServer& server, const QByteArray& response,
     });
     timeout.start();
     loop.exec();
+    if (!timeout.isActive()) {
+        // "No request arrived" hides three different failures: the server was never
+        // listening, it listened on another address than the client dialed, or the
+        // client never got as far as dialing at all.
+        std::cerr << "no request: listening=" << server.isListening()
+                  << " port=" << server.serverPort()
+                  << " address=" << server.serverAddress().toString().toStdString()
+                  << " pending=" << server.hasPendingConnections()
+                  << " pool=" << QThreadPool::globalInstance()->activeThreadCount()
+                  << '/' << QThreadPool::globalInstance()->maxThreadCount() << '\n';
+    }
     require(timeout.isActive(), "local API test server timed out waiting for a request");
     return request;
 }

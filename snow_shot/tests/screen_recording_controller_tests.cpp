@@ -5789,6 +5789,16 @@ int main(int argc, char** argv) {
             system->openAndFocus();
             microphone->openAndFocus();
             QCoreApplication::processEvents();
+            if (!(microphone->popover()->isVisible() && !system->popover()->isVisible() &&
+                  audioMonitorCreates == 1 && audioMonitorsActive == 1)) {
+                // The three conditions fail for different reasons: the popovers may have
+                // swapped the wrong way, or the preview monitor was recreated instead of
+                // reused. Print the counters, not just the verdict.
+                std::cerr << "audio gain switch: microphone=" << microphone->popover()->isVisible()
+                          << " system=" << system->popover()->isVisible()
+                          << " creates=" << audioMonitorCreates.load()
+                          << " active=" << audioMonitorsActive.load() << '\n';
+            }
             require(microphone->popover()->isVisible() && !system->popover()->isVisible() &&
                         audioMonitorCreates == 1 && audioMonitorsActive == 1,
                     "rapid source switching rejects a stale preview before retirement completes");

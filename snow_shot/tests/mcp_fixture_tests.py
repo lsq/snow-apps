@@ -812,7 +812,10 @@ def screenshot_contract_outcomes(client, directory, resources=False):
             assert completed["result"]["result"]["fixture_provider"] is True
         if name == "snow_shot_screenshot_draw_template":
             template = json.loads(envelope["result"]["payload"])
-            assert template["schemaVersion"] == 1 and len(template["elements"]) == 1
+            # Name the payload when the shape is wrong: an empty element list and a
+            # duplicated one are different defects, and the bare assertion cannot say
+            # which of the two a platform produced.
+            assert template["schemaVersion"] == 1 and len(template["elements"]) == 1, template
         if name == "snow_shot_screenshot_scroll_once":
             assert envelope["result"]["scroll_steps"] == 1
         if name == "snow_shot_screenshot_edit_recognition":
