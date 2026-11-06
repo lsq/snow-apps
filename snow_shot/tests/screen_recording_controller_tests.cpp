@@ -5390,8 +5390,17 @@ void recordingTrimmingTests(const QString& directory, bool uiOnly = false) {
                 choose.stop();
                 wait([&] { return copy->isEnabled(); });
                 QFile saved(destination + QStringLiteral(".mp4"));
-                require(saved.open(QIODevice::ReadOnly) &&
-                            saved.readAll() == QByteArray("trim fixture") &&
+                const bool savedOpened = saved.open(QIODevice::ReadOnly);
+                const QByteArray savedBytes = savedOpened ? saved.readAll() : QByteArray();
+                if (!(savedOpened && savedBytes == QByteArray("trim fixture") &&
+                      clipExports == oldExports + 1 && controller.isOpen())) {
+                    std::cerr << "trim save: opened=" << savedOpened
+                              << " bytes=" << savedBytes.size()
+                              << " body=\"" << savedBytes.toStdString() << "\" exports="
+                              << clipExports << " expected=" << oldExports + 1
+                              << " open=" << controller.isOpen() << '\n';
+                }
+                require(savedOpened && savedBytes == QByteArray("trim fixture") &&
                             clipExports == oldExports + 1 && controller.isOpen(),
                         "Save atomically publishes the cached trim and keeps the editor open");
                 require(

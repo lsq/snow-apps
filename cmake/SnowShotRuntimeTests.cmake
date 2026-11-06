@@ -114,6 +114,7 @@ function(snow_shot_add_ocr_runtime_tests)
     set_tests_properties(snow-shot-ocr-managed-runtime-tests
         PROPERTIES
         TIMEOUT 60 LABELS "unit;windows"
+        SKIP_RETURN_CODE 77
         ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:${SNOW_QT_NS}::Core>")
     if(APPLE)
         set_tests_properties(snow-shot-ocr-managed-runtime-tests PROPERTIES LABELS "unit")

@@ -49,7 +49,7 @@ void require(bool condition, const char* message) {
 
 constexpr int kRecognitionTimeoutMs = 30'000;
 
-#ifdef Q_OS_MACOS
+#if defined(Q_OS_MACOS) || defined(Q_OS_LINUX)
 const QString kWorkerName = QStringLiteral("snow-ocr-process");
 #else
 const QString kWorkerName = QStringLiteral("snow-ocr-process.exe");
@@ -369,6 +369,11 @@ void diskBackedEngineCompletesThroughTheQtWorker(bool managedRuntime = false) {
 #ifdef Q_OS_MACOS
         managedRuntime ? QDir(QCoreApplication::applicationDirPath()).filePath(kWorkerName)
                        : options.processPath;
+#elif defined(Q_OS_LINUX)
+        // The Linux packages ship no verified OCR payload yet (only the Windows
+        // archives exist), so the managed-runtime contract has nothing to stage.
+        // Say so instead of failing on an asset the port has not produced.
+        managedRuntime ? QString() : options.processPath;
 #else
         managedRuntime ? QDir(QCoreApplication::applicationDirPath())
                              .filePath(QStringLiteral("assets/ocr/runtimes/1.1.0/windows-x64/"
@@ -376,11 +381,16 @@ void diskBackedEngineCompletesThroughTheQtWorker(bool managedRuntime = false) {
                        : options.processPath;
 #endif
     if (managedRuntime) {
+#ifdef Q_OS_LINUX
+        std::cerr << "skip: no packaged OCR runtime payload for this platform\n";
+        std::_Exit(77);
+#else
         // Exercise the same trusted offline selection as the app, without a
         // pre-existing user cache or a successful network fallback.
         options.cacheRoot = cache.path();
         options.proxyUrl = QStringLiteral("http://127.0.0.1:1");
         require(QFileInfo::exists(expectedProcess), "the managed OCR runtime must be staged");
+#endif
     }
     ScreenshotOcrRecognitionService service(options);
     require(service.liveWorkerCount() == 0,

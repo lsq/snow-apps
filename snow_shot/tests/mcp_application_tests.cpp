@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 
 namespace {
 using namespace snow_shot;
@@ -226,16 +227,26 @@ void runMcpApplicationTests() {
         request.params = std::move(params);
         request.expectedRevision = revision;
         request.idempotencyKey = std::move(key);
-        std::optional<ScreenshotMcpResponse> result;
-        service.request(request, [&](auto response) { result = std::move(response); });
+        // The service may hold a completion past this call (a replayed idempotency
+        // record hands the reply to its waiters later), so the holder has to outlive
+        // the stack frame: a by-reference capture writes a whole response into a dead
+        // frame and the next local the compiler placed there reads as garbage.
+        auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
+        auto completions = std::make_shared<int>(0);
+        service.request(request, [result, completions](auto response) {
+            *result = std::move(response);
+            ++*completions;
+        });
         QElapsedTimer timer;
         timer.start();
-        while (!result && timer.elapsed() < 5000) {
+        while (!result->has_value() && timer.elapsed() < 5000) {
             QCoreApplication::processEvents();
             QThread::msleep(1);
         }
-        require(result.has_value(), "application request completes");
-        return *result;
+        if (*completions > 1)
+            std::cerr << "application request completed " << *completions << " times\n";
+        require(result->has_value(), "application request completes");
+        return result->value();
     };
     const auto snapshot = call(QStringLiteral("settings_get"));
     require(snapshot.ok && snapshot.result.value(QStringLiteral("fields")).toArray().size() ==
@@ -981,11 +992,13 @@ void runMcpTranslationTests() {
         request.params = std::move(params);
         request.expectedRevision = revision;
         request.idempotencyKey = std::move(key);
-        std::optional<ScreenshotMcpResponse> result;
-        service.request(request, [&](auto response) { result = std::move(response); });
-        translation_tests::waitUntil([&] { return result.has_value(); },
+        // Same late-completion hazard as the settings fixture: keep the reply on the
+        // heap so a completion delivered after this call cannot write into a dead frame.
+        auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
+        service.request(request, [result](auto response) { *result = std::move(response); });
+        translation_tests::waitUntil([&] { return result->has_value(); },
                                      "translation request completes");
-        return *result;
+        return result->value();
     };
     translationRetries(call, translation, jobs, provider, selectionCaptures);
     service.shutdown();

@@ -49,8 +49,12 @@ constexpr auto kPlatform = "macos-arm64";
 constexpr auto kPlatform = "macos-x64";
 #elif defined(Q_OS_WIN) && defined(Q_PROCESSOR_ARM_64)
 constexpr auto kPlatform = "windows-arm64";
-#else
+#elif defined(Q_OS_WIN)
 constexpr auto kPlatform = "windows-x64";
+#elif defined(Q_PROCESSOR_ARM_64)
+constexpr auto kPlatform = "linux-arm64";
+#else
+constexpr auto kPlatform = "linux-x64";
 #endif
 constexpr auto kInterruptedError = "OCR asset preparation was interrupted";
 constexpr int kShutdownJoinTimeoutMs = 10'000;

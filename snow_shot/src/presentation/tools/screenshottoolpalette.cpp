@@ -5091,16 +5091,6 @@ bool ScreenshotToolPalette::activateToolFromToolbar(Tool tool, bool toggleVisibl
         !toggleVisibleButton || fixedGroupButton ? m_activeTool.has_value() && *m_activeTool == tool
         : requestedButton != nullptr             ? m_activeToolButton == requestedButton
                                      : m_activeTool.has_value() && *m_activeTool == tool;
-    // In recording mode Export Settings is the palette's neutral state, the counterpart
-    // of the Select tool in the screenshot palette. Repeating a tool therefore restores
-    // it rather than switching to element selection, which the recording surface does
-    // not expose as an idle mode -- a toolbar click and a repeated shortcut behave the
-    // same way here, and `activateDrawingShortcut` reaches this path with
-    // toggleVisibleButton = false, so the repeat test cannot depend on that flag.
-    if (alreadyActive && m_options.recordingDrawingMode) {
-        setRecordingExportSettingsVisible(true);
-        return true;
-    }
     const Tool requestedTool = alreadyActive && tool != Tool::Select ? Tool::Select : tool;
     activateDrawingTool(requestedTool);
     return true;

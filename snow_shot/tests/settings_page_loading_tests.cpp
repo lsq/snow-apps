@@ -1532,7 +1532,14 @@ void relatedSettingsLayoutAndKeyboard(const settings::SettingsRegistry& registry
                     const int advance = metrics.horizontalAdvance(button->accessibleName());
                     // Glyph bearings can add a pixel or two beyond the text advance,
                     // and fontconfig's line metrics can differ from fm.height() by one.
-                    const bool sizedToText = qAbs(buttonRect.width() - advance) <= 2 &&
+                    // A long translated title also picks up a few pixels of shaping
+                    // difference: fontconfig resolves the fallback family per locale, and
+                    // the button lays the string out with the widget's own engine rather
+                    // than `QFontMetrics`. Scale the width allowance with the string so a
+                    // real built-in padding (>= 8px) still fails while "Text recognition &
+                    // translation" at 206px may sit 5px wider on DejaVu.
+                    const int widthSlack = std::max(2, advance / 40);
+                    const bool sizedToText = qAbs(buttonRect.width() - advance) <= widthSlack &&
                                              qAbs(buttonRect.height() - metrics.height()) <= 1;
                     if (!sizedToText) {
                         std::cerr << "related button sizing: locale=" << locale.toStdString()

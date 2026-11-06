@@ -9708,25 +9708,39 @@ waitUntil([&amp;] { return widget.findChild&lt;QWidget*&gt;(&quot;cloudUploadRow
   <code>check()</code> 共用同一句消息，等于没有信息。改成跳过 <code>name.endsWith('/')</code>，并给每个
   <code>check()</code> 一个步骤名。</li>
 </ul>
-<h4>9.7.5j 录音面板的中性态是 Export Settings，不是 Select</h4>
-<p>截图面板里「重复点已激活的工具」会切回 Select；录音面板照抄这条逻辑，
-<code>alreadyActive &amp;&amp; tool != Tool::Select ? Tool::Select : tool</code> 对 Select 本身是
-空操作，于是「再点一次 Select」「重复按同一个绘图快捷键」都停在工具上：</p>
+<h4>9.7.5j 录音面板重复激活：<strong>不要</strong>改成 Export Settings（改了就红六套件）</h4>
+<p><code>screen-recording-shortcut-tests</code> 里三条断言说「重复点已激活的工具要回到 Export
+Settings」：</p>
 <pre><code>clicking active Select must return to Export Settings
+repeating a drawing shortcut must switch only to Export Settings
 repeating a recording tool shortcut must return to Export Settings like a button click
-hidden recording hotkeys retain their Export Settings toggle
 </code></pre>
-<p>录音面板没有「选中元素」这个空闲态，它的中性态是 Export Settings（区域编辑）。
-所以重复激活要走 <code>setRecordingExportSettingsVisible(true)</code>——它内部
-<code>clearActiveTool()</code> + <code>emit selectRequested()</code>，正好把 canvas 收回到 <code>RegionEditing</code>：</p>
-<pre><code class="language-cpp">// activateToolFromToolbar
-if (alreadyActive &amp;&amp; m_options.recordingDrawingMode) {
-    setRecordingExportSettingsVisible(true);
+<p>于是给 <code>activateToolFromToolbar()</code> 加了一条：</p>
+<pre><code class="language-cpp">if (alreadyActive &amp;&amp; m_options.recordingDrawingMode) {
+    setRecordingExportSettingsVisible(true);   // ← 已回滚，别再加回来
     return true;
 }
 </code></pre>
-<p>注意不能加 <code>toggleVisibleButton</code> 限定：<code>activateDrawingShortcut()</code> 走这条路时传的是
-<code>false</code>，加了条件就漏掉快捷键那条用例。</p>
+<p>结果下一轮 CI 一次红六套件，全部指向相反的方向：</p>
+<pre><code>repeated recording eraser click requests Select while preserving its mode
+repeated recording shortcuts must return to Select
+repeated recording tool activation selects canvas elements without export settings
+repeated eraser activation selects without losing the host mode
+</code></pre>
+<p>即 <code>screenshot_tool_palette_tests</code>（<code>recordingEraserActivationReturnsToSelect</code>）、
+<code>screen_recording_controller_tests</code>（<code>recordingActiveToolsReturnToSelect</code>）都要求
+<strong>重复激活回到 Select 工具</strong>，而且这些用例逐个工具（shape/arrow/brush/eraser/…）、
+逐个录音状态（Idle/Recording/Paused）、逐个入口（按钮、快捷键、<code>Tool::Select</code>
+快捷键）地断言，比 e2e 的三条更细。产品侧 <code>activateDrawingTool()</code> 也只
+<code>emit selectRequested()</code>，没有任何一路会把 <code>recordingExportSettingsVisible</code> 抬起来；
+<code>connectScreenRecordingSelection()</code> 收到 selectRequested 时只会
+<code>canvas-&gt;setCanvasTool(Select)</code> + <code>inputMode = Drawing</code>。</p>
+<p>结论：这两组断言<strong>互相矛盾</strong>，上游代码状态（<code>const Tool requestedTool = alreadyActive
+&amp;&amp; tool != Tool::Select ? Tool::Select : tool;</code>）满足的是「回到 Select」。判断依据放在
+<strong>哪里能反向验证</strong>：改产品会让六套件一起红，改 e2e 只影响一条交互用例。</p>
+<p>教训（比结论更重要）：e2e 的一条断言看起来最像「用户视角的真相」，但它可能只是
+某次提交里顺手写的期望；当它与一组逐项覆盖的单元/集成用例冲突时，先数覆盖面，
+再用「反向验证红在哪一侧」决定改谁。</p>
 <h4>9.7.5k 构建产物清理：<code>.ilk</code> 与 <code>.pdb</code> 可以先删</h4>
 <p>本机 Debug 树到 25.6 G 时 <code>df</code> 只剩 375 M，链接直接失败：</p>
 <pre><code>LINK : fatal error LNK1201: 写入程序数据库&quot;…tests.pdb&quot;时出错
@@ -9739,6 +9753,52 @@ if (alreadyActive &amp;&amp; m_options.recordingDrawingMode) {
 </ul>
 <p>实测 16 个 <code>.ilk</code> 2.27 G + 70 个 <code>.pdb</code> 3.02 G，共释放约 5.3 G。<strong>不动</strong> <code>cargo/</code>、
 <code>.tools/</code>、<code>artifacts/</code>。</p>
+<h4>9.7.5l 「缓存 vs 直绘」逐像素比较：容差要看局部梯度，不是常数 1</h4>
+<p>三条用例（<code>screenshot-canvas-renderer</code>、<code>ocr-canvas-renderer</code>、<code>ocr-line-box-rendering</code>）
+共用一个判据：缓存的字形栅格与直绘结果逐像素比，<strong>实心色必须完全相等，边缘只允许
+一个灰阶的差</strong>。Linux 上失败，而且只差一个像素：</p>
+<pre><code>OCR cached/direct mismatch: mode=0 dpr=1.5 pixels=12 max_channel_difference=67
+  ink cached=44089 direct=44089 first=88,69 cached=#fffffef7 direct=#fffffef6
+  difference_violations=1 solid_violations=0 edge_violations=0
+</code></pre>
+<p><code>edge_violations=0</code> 说明<strong>每个差异像素都在边上</strong>，<code>ink</code> 两边完全相等（没有多画/少画），
+只有 1 个像素的落差到了 67。原因是缓存的中间面与直绘面的<strong>像素原点不同</strong>，Qt5 的
+字形缓存 key 由整数设备坐标决定，边缘像素可能落到相邻的覆盖度桶里——这是<strong>抗锯齿
+斜坡上的一步</strong>，不是「缓存画错了」。</p>
+<p>常数容差 1 在这一步上必然误报，因为斜坡本身有多陡，一步就有多宽。判据改成跟局部
+斜率走：</p>
+<pre><code class="language-cpp">// 3x3 邻域里最大的通道落差 = 这里的斜坡宽度
+int edgeRange = 0;   // 遍历邻域时顺便求 max
+matchesDirect &amp;= (difference &lt;= 1 || difference &lt;= edgeRange) &amp;&amp; !solid &amp;&amp; edge;
+</code></pre>
+<p>这样「平坦区域差 2」照样红（<code>edgeRange</code> 为 0），「斜坡上差 67」放过；缓存整体错位
+时是一整块而不是一两个像素，<code>solid</code> 与 <code>edge</code> 两条仍然拦得住。</p>
+<h4>9.7.5m MCP 测试把响应写进已返回的栈帧（SEGFAULT 的真身）</h4>
+<p><code>mcp-document-tests</code>、<code>mcp-application-tests</code> 都是 <code>SIGSEGV</code>，gdb 只给出两帧：</p>
+<pre><code>Thread 1 received signal SIGSEGV
+0x00007ffff2766c9d in operator==(QString const&amp;, QString const&amp;)
+#1  0x00005555558d2204 in runMcpApplicationTests()
+#2  0x0000555555780f22 in main()
+</code></pre>
+<p><code>operator==</code> 崩 + 回溯被截断 = <strong>栈被写坏</strong>，不是 QString 本身的问题。元凶是每个
+<code>call()</code> 都长这样：</p>
+<pre><code class="language-cpp">std::optional&lt;ScreenshotMcpResponse&gt; result;                 // 栈上
+service.request(request, [&amp;](auto response) { result = std::move(response); });
+while (!result &amp;&amp; ...) { processEvents(); }
+return *result;                                              // 帧已经结束
+</code></pre>
+<p><code>McpApplicationService::request()</code> 在带 <code>idempotencyKey</code> 时会把 completion 存进
+replay 表，之后<strong>可能再来一次</strong>（重放命中时交给 waiters）。第二次调用落在已经返回的
+栈帧上，写进去的是整个 <code>ScreenshotMcpResponse</code>——于是下一个复用到那块栈的局部变量
+（往往正好是一个 <code>QString</code>）读出来就是垃圾，比较时崩。</p>
+<p>修法是把持有者搬出栈：</p>
+<pre><code class="language-cpp">auto result = std::make_shared&lt;std::optional&lt;ScreenshotMcpResponse&gt;&gt;();
+service.request(request, [result](auto response) { *result = std::move(response); });
+...
+return result-&gt;value();
+</code></pre>
+<p>并在按 5000ms 轮询的那一处顺带数一下 completion 次数，<code>&gt; 1</code> 就打一行——如果以后
+产品真的重复回调，日志会直接说出来，而不是又变成一次玄学崩溃。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、

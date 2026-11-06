@@ -38,6 +38,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <utility>
 #ifdef Q_OS_WIN
 #include <qt_windows.h>
@@ -516,11 +517,14 @@ void documentReservations(const QString& directory) {
             require(condition(), "source reservation operation timed out");
         };
         const auto call = [&](QString method, QJsonObject params, quint64 owner = 1) {
-            std::optional<ScreenshotMcpResponse> result;
+            // Held on the heap: the service can deliver the reply after this frame is
+            // gone (a replayed record hands it to its waiters later), and a captured
+            // reference would write a whole response into dead stack.
+            auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
             dispatch(std::move(method), std::move(params), owner,
-                     [&](auto response) { result = std::move(response); });
-            wait([&] { return result.has_value(); });
-            return *result;
+                     [result](auto response) { *result = std::move(response); });
+            wait([&] { return result->has_value(); });
+            return result->value();
         };
         QStringList ids;
         for (int index = 0; index < 3; ++index) {
@@ -815,11 +819,12 @@ void documentConcurrency() {
         require(condition(), "independent document operation timed out");
     };
     const auto call = [&](const QString& method, QJsonObject params = {}, quint64 owner = 1) {
-        std::optional<ScreenshotMcpResponse> result;
+        auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
         dispatch(
-            method, std::move(params), [&](auto response) { result = std::move(response); }, owner);
-        wait([&] { return result.has_value(); });
-        return *result;
+            method, std::move(params), [result](auto response) { *result = std::move(response); },
+            owner);
+        wait([&] { return result->has_value(); });
+        return result->value();
     };
     QStringList ids;
     for (int index = 0; index < 4; ++index) {
@@ -1545,18 +1550,20 @@ void documentWorkflows() {
         if (!id.isEmpty())
             params.insert(QStringLiteral("document_id"), id);
         request.params = std::move(params);
-        std::optional<ScreenshotMcpResponse> result;
-        service.request(request, [&](auto response) { result = std::move(response); });
+        // Every request here carries an idempotency key, so the service keeps the
+        // completion in its replay table and may invoke it once the frame is gone.
+        auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
+        service.request(request, [result](auto response) { *result = std::move(response); });
         QElapsedTimer timer;
         timer.start();
-        while (!result && timer.elapsed() < 5000) {
+        while (!result->has_value() && timer.elapsed() < 5000) {
             QCoreApplication::processEvents();
             QThread::msleep(1);
         }
-        require(result.has_value(), "advanced document request completes");
-        if (result->ok && result->revision > 0)
-            revision = *result->revision;
-        return *result;
+        require(result->has_value(), "advanced document request completes");
+        if ((*result)->ok && (*result)->revision > 0)
+            revision = *(*result)->revision;
+        return result->value();
     };
     const auto opened = call(QStringLiteral("document_open"),
                              {{QStringLiteral("source"), QStringLiteral("clipboard")}});
@@ -2414,16 +2421,16 @@ void documents(const QString& directory) {
         request.expectedRevision = revision;
         request.method = std::move(method);
         request.params = std::move(params);
-        std::optional<ScreenshotMcpResponse> result;
-        service.request(request, [&](auto response) { result = std::move(response); });
+        auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
+        service.request(request, [result](auto response) { *result = std::move(response); });
         QElapsedTimer timer;
         timer.start();
-        while (!result && timer.elapsed() < 10000) {
+        while (!result->has_value() && timer.elapsed() < 10000) {
             QCoreApplication::processEvents();
             QThread::msleep(1);
         }
-        require(result.has_value(), "document command completed");
-        return *result;
+        require(result->has_value(), "document command completed");
+        return result->value();
     };
     const auto opened =
         call(QStringLiteral("snow_shot_document_open"), {{QStringLiteral("path"), sourcePath}}, 1,

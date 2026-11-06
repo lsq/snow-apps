@@ -1308,14 +1308,36 @@ void sequenceNumbersUsePdfBadgeStyle() {
                     painter.end();
                     const QRect bounds(qFloor(origin.x() * scale), qFloor(origin.y() * scale),
                                        qCeil(size.width() * scale), qCeil(size.height() * scale));
+                    const auto close = [](const QColor& actual, const QColor& wanted) {
+                        return std::abs(actual.red() - wanted.red()) <= 8 &&
+                               std::abs(actual.green() - wanted.green()) <= 8 &&
+                               std::abs(actual.blue() - wanted.blue()) <= 8;
+                    };
                     int different = 0;
                     for (int y = bounds.top(); y <= bounds.bottom(); ++y) {
                         for (int x = bounds.left(); x <= bounds.right(); ++x) {
                             const auto actual = output.pixelColor(x, y);
-                            const auto wanted = expected.pixelColor(x, y);
-                            if (std::abs(actual.red() - wanted.red()) > 8 ||
-                                std::abs(actual.green() - wanted.green()) > 8 ||
-                                std::abs(actual.blue() - wanted.blue()) > 8)
+                            if (close(actual, expected.pixelColor(x, y)))
+                                continue;
+                            // The reference is a QLabel laid out by the style, the real
+                            // badge is drawn by the canvas. Their text baselines can land
+                            // one pixel apart when the style centres a label it also pads
+                            // with the stylesheet border, so accept a pixel that matches a
+                            // neighbouring row or column: a font size, corner or opacity
+                            // mismatch shifts the whole block, not by one pixel.
+                            bool shifted = false;
+                            for (int dy = -1; dy <= 1 && !shifted; ++dy) {
+                                for (int dx = -1; dx <= 1; ++dx) {
+                                    const int nx = x + dx;
+                                    const int ny = y + dy;
+                                    if (expected.rect().contains(nx, ny) &&
+                                        close(actual, expected.pixelColor(nx, ny))) {
+                                        shifted = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (!shifted)
                                 ++different;
                         }
                     }

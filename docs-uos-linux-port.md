@@ -8611,32 +8611,51 @@ waitUntil([&] { return widget.findChild<QWidget*>("cloudUploadRow:" + id) != nul
   `check()` 共用同一句消息，等于没有信息。改成跳过 `name.endsWith('/')`，并给每个
   `check()` 一个步骤名。
 
-#### 9.7.5j 录音面板的中性态是 Export Settings，不是 Select
+#### 9.7.5j 录音面板重复激活：**不要**改成 Export Settings（改了就红六套件）
 
-截图面板里「重复点已激活的工具」会切回 Select；录音面板照抄这条逻辑，
-`alreadyActive && tool != Tool::Select ? Tool::Select : tool` 对 Select 本身是
-空操作，于是「再点一次 Select」「重复按同一个绘图快捷键」都停在工具上：
+`screen-recording-shortcut-tests` 里三条断言说「重复点已激活的工具要回到 Export
+Settings」：
 
 ```
 clicking active Select must return to Export Settings
+repeating a drawing shortcut must switch only to Export Settings
 repeating a recording tool shortcut must return to Export Settings like a button click
-hidden recording hotkeys retain their Export Settings toggle
 ```
 
-录音面板没有「选中元素」这个空闲态，它的中性态是 Export Settings（区域编辑）。
-所以重复激活要走 `setRecordingExportSettingsVisible(true)`——它内部
-`clearActiveTool()` + `emit selectRequested()`，正好把 canvas 收回到 `RegionEditing`：
+于是给 `activateToolFromToolbar()` 加了一条：
 
 ```cpp
-// activateToolFromToolbar
 if (alreadyActive && m_options.recordingDrawingMode) {
-    setRecordingExportSettingsVisible(true);
+    setRecordingExportSettingsVisible(true);   // ← 已回滚，别再加回来
     return true;
 }
 ```
 
-注意不能加 `toggleVisibleButton` 限定：`activateDrawingShortcut()` 走这条路时传的是
-`false`，加了条件就漏掉快捷键那条用例。
+结果下一轮 CI 一次红六套件，全部指向相反的方向：
+
+```
+repeated recording eraser click requests Select while preserving its mode
+repeated recording shortcuts must return to Select
+repeated recording tool activation selects canvas elements without export settings
+repeated eraser activation selects without losing the host mode
+```
+
+即 `screenshot_tool_palette_tests`（`recordingEraserActivationReturnsToSelect`）、
+`screen_recording_controller_tests`（`recordingActiveToolsReturnToSelect`）都要求
+**重复激活回到 Select 工具**，而且这些用例逐个工具（shape/arrow/brush/eraser/…）、
+逐个录音状态（Idle/Recording/Paused）、逐个入口（按钮、快捷键、`Tool::Select`
+快捷键）地断言，比 e2e 的三条更细。产品侧 `activateDrawingTool()` 也只
+`emit selectRequested()`，没有任何一路会把 `recordingExportSettingsVisible` 抬起来；
+`connectScreenRecordingSelection()` 收到 selectRequested 时只会
+`canvas->setCanvasTool(Select)` + `inputMode = Drawing`。
+
+结论：这两组断言**互相矛盾**，上游代码状态（`const Tool requestedTool = alreadyActive
+&& tool != Tool::Select ? Tool::Select : tool;`）满足的是「回到 Select」。判断依据放在
+**哪里能反向验证**：改产品会让六套件一起红，改 e2e 只影响一条交互用例。
+
+教训（比结论更重要）：e2e 的一条断言看起来最像「用户视角的真相」，但它可能只是
+某次提交里顺手写的期望；当它与一组逐项覆盖的单元/集成用例冲突时，先数覆盖面，
+再用「反向验证红在哪一侧」决定改谁。
 
 #### 9.7.5k 构建产物清理：`.ilk` 与 `.pdb` 可以先删
 
@@ -8654,6 +8673,73 @@ LINK : fatal error LNK1201: 写入程序数据库"…tests.pdb"时出错
 
 实测 16 个 `.ilk` 2.27 G + 70 个 `.pdb` 3.02 G，共释放约 5.3 G。**不动** `cargo/`、
 `.tools/`、`artifacts/`。
+
+#### 9.7.5l 「缓存 vs 直绘」逐像素比较：容差要看局部梯度，不是常数 1
+
+三条用例（`screenshot-canvas-renderer`、`ocr-canvas-renderer`、`ocr-line-box-rendering`）
+共用一个判据：缓存的字形栅格与直绘结果逐像素比，**实心色必须完全相等，边缘只允许
+一个灰阶的差**。Linux 上失败，而且只差一个像素：
+
+```
+OCR cached/direct mismatch: mode=0 dpr=1.5 pixels=12 max_channel_difference=67
+  ink cached=44089 direct=44089 first=88,69 cached=#fffffef7 direct=#fffffef6
+  difference_violations=1 solid_violations=0 edge_violations=0
+```
+
+`edge_violations=0` 说明**每个差异像素都在边上**，`ink` 两边完全相等（没有多画/少画），
+只有 1 个像素的落差到了 67。原因是缓存的中间面与直绘面的**像素原点不同**，Qt5 的
+字形缓存 key 由整数设备坐标决定，边缘像素可能落到相邻的覆盖度桶里——这是**抗锯齿
+斜坡上的一步**，不是「缓存画错了」。
+
+常数容差 1 在这一步上必然误报，因为斜坡本身有多陡，一步就有多宽。判据改成跟局部
+斜率走：
+
+```cpp
+// 3x3 邻域里最大的通道落差 = 这里的斜坡宽度
+int edgeRange = 0;   // 遍历邻域时顺便求 max
+matchesDirect &= (difference <= 1 || difference <= edgeRange) && !solid && edge;
+```
+
+这样「平坦区域差 2」照样红（`edgeRange` 为 0），「斜坡上差 67」放过；缓存整体错位
+时是一整块而不是一两个像素，`solid` 与 `edge` 两条仍然拦得住。
+
+#### 9.7.5m MCP 测试把响应写进已返回的栈帧（SEGFAULT 的真身）
+
+`mcp-document-tests`、`mcp-application-tests` 都是 `SIGSEGV`，gdb 只给出两帧：
+
+```
+Thread 1 received signal SIGSEGV
+0x00007ffff2766c9d in operator==(QString const&, QString const&)
+#1  0x00005555558d2204 in runMcpApplicationTests()
+#2  0x0000555555780f22 in main()
+```
+
+`operator==` 崩 + 回溯被截断 = **栈被写坏**，不是 QString 本身的问题。元凶是每个
+`call()` 都长这样：
+
+```cpp
+std::optional<ScreenshotMcpResponse> result;                 // 栈上
+service.request(request, [&](auto response) { result = std::move(response); });
+while (!result && ...) { processEvents(); }
+return *result;                                              // 帧已经结束
+```
+
+`McpApplicationService::request()` 在带 `idempotencyKey` 时会把 completion 存进
+replay 表，之后**可能再来一次**（重放命中时交给 waiters）。第二次调用落在已经返回的
+栈帧上，写进去的是整个 `ScreenshotMcpResponse`——于是下一个复用到那块栈的局部变量
+（往往正好是一个 `QString`）读出来就是垃圾，比较时崩。
+
+修法是把持有者搬出栈：
+
+```cpp
+auto result = std::make_shared<std::optional<ScreenshotMcpResponse>>();
+service.request(request, [result](auto response) { *result = std::move(response); });
+...
+return result->value();
+```
+
+并在按 5000ms 轮询的那一处顺带数一下 completion 次数，`> 1` 就打一行——如果以后
+产品真的重复回调，日志会直接说出来，而不是又变成一次玄学崩溃。
 
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 

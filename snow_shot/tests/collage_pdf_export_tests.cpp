@@ -301,6 +301,22 @@ void combinedOrderAndGeometry(const QString& directory) {
                                      : "/MediaBox [0 0 841.88976378 595.27559055]";
         require(pdf.count(media) == 2, "all pages must share selected physical paper dimensions");
         const auto images = pdfImages(pdf);
+        if (!(images.size() == 31 && images.first().width() == 1 &&
+              images.first().pixelColor(0, 0) == QColor(Qt::blue) &&
+              images.last().pixelColor(0, 0) == QColor(Qt::red))) {
+            // Which part of "31 tiles, blue first, red last" broke: the tile count
+            // (page splitting), the tile width (a re-decoded strip), or the order.
+            std::cerr << "collage tiles: orientation=" << static_cast<int>(orientation)
+                      << " count=" << images.size();
+            if (!images.isEmpty()) {
+                std::cerr << " first=" << images.first().width() << 'x'
+                          << images.first().height() << " color="
+                          << images.first().pixelColor(0, 0).name().toStdString()
+                          << " last=" << images.last().width() << 'x' << images.last().height()
+                          << " color=" << images.last().pixelColor(0, 0).name().toStdString();
+            }
+            std::cerr << '\n';
+        }
         require(images.size() == 31 && images.first().width() == 1 &&
                     images.first().pixelColor(0, 0) == QColor(Qt::blue) &&
                     images.last().pixelColor(0, 0) == QColor(Qt::red),
