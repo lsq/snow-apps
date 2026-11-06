@@ -9610,6 +9610,135 @@ bottom first=473 last=599    // 下 tile 的 clip.top=512   → floor(473.17) = 
     require(observed.rebuiltMatches, ...);
 #endif
 </code></pre>
+<h4>9.7.5f 2026-11-06：一条 Qt6-only 诊断把整个测试步骤吞了</h4>
+<p>上一轮为了定位 <code>empty document fast path</code> 的差一档，在
+<code>screenshot_export_artifact_tests.cpp</code> 里加了</p>
+<pre><code class="language-cpp">rendered.colorSpace().description()
+</code></pre>
+<p><code>QColorSpace::description()</code> 是 Qt 6.8 才有的成员。Linux 侧编译直接失败：</p>
+<pre><code>error: 'class QColorSpace' has no member named 'description'
+FAILED: snow_shot/CMakeFiles/snow-shot-export-artifact-tests.dir/...
+</code></pre>
+<p>ninja 在第一个失败后停止调度，于是 <strong><code>Unit tests</code> 这个步骤根本没跑</strong>，CI 报的
+<code>27 tests failed</code> 里一条测试结果都没有——整轮只有这一个编译错误。也就是说
+「修好一条断言」和「CI 变绿」之间隔着一层编译门禁，而门禁外的红没有任何信息量。</p>
+<p>本机没暴露它的原因不是编译器宽容，而是 <strong>mtime 陷阱</strong>：那个 TU 上一次编译成功后
+时间戳比源码新，ninja 认为它是最新的，改动从未进过 <code>cl.exe</code>（同一轮里
+<code>collage-document</code> 也栽在这上面，换新二进制后直接通过）。</p>
+<p>规则：<strong>诊断代码同样受「Qt5 可用面」约束</strong>。要标识一个 <code>QColorSpace</code>，用两代都有的
+结构量：</p>
+<pre><code class="language-cpp">qDebug() &lt;&lt; int(space.primaries()) &lt;&lt; int(space.transferFunction()) &lt;&lt; int(image.format());
+</code></pre>
+<p><code>description()</code>（6.8）、<code>colorModel()</code>（6.0）、<code>toIccProfile()</code>（6.0，Qt5 叫
+<code>iccProfile()</code>）三个全部不可用。sRGB 与 Display P3 的 <code>primaries()</code> 不同，而断言
+比较的正是这个，所以结构量足够定位。</p>
+<p>顺带一条：<strong>改完源码先 <code>touch</code></strong>。<code>cmake --build</code> 静默返回 0 不代表这个 TU 被重编过；
+删过 <code>.pdb</code>/<code>.ilk</code> 之后尤其要确认链接真的发生了（日志里应有 <code>Linking CXX executable</code>）。</p>
+<h4>9.7.5g 断言链的滚雪球：一次 CI 只能暴露每条用例的第一处失败</h4>
+<p><code>require()</code> 是 <code>std::_Exit(EXIT_FAILURE)</code>，用例在第一条不成立的断言处终止。于是
+「修好 A」之后，同一个用例里的 B 成为下一条红——这一轮有四处都是这样：</p>
+<table>
+<thead>
+<tr>
+<th>用例</th>
+<th>修前第一条红</th>
+<th>修后暴露的第二条</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>image-split-editor</code></td>
+<td>damage 覆盖度</td>
+<td>空态拖放路径（<code>C:/split.png</code>）</td>
+</tr>
+<tr>
+<td><code>cloud-upload</code></td>
+<td>destination 同步</td>
+<td>三行全宽列（同一根因：异步接受值）</td>
+</tr>
+<tr>
+<td><code>screen-recording-shortcut</code></td>
+<td>重复点 Select</td>
+<td>重复按绘图快捷键</td>
+</tr>
+<tr>
+<td><code>settings-navigation</code></td>
+<td>按钮按文本定尺寸</td>
+<td>（本机 70 s，超时 60 s）</td>
+</tr>
+</tbody>
+</table>
+<p>所以「CI 从 38 掉到 27」不等于「修好了 11 条」，其中若干只是把红挪到了下一行。
+判断进展要看<strong>同一用例的断言行号是否前移</strong>，而不是看总数。</p>
+<h4>9.7.5h 共享缓存总量证明不了「某一行被丢弃」</h4>
+<p><code>ScreenshotOcrTextLayer::glyphRasterBytes()</code> 是整个共享缓存的净额。断言
+<code>bytesAfterReplacement &lt; textBytes</code> 想说的是「被替换的那一行丢掉了它的栅格」，但
+共享净额无法区分是哪一行。Linux 上这一行本来就走<strong>直绘</strong>
+（<code>paintRaster()</code> 里 <code>directClip != cachedClip</code> 的取整检查没过，Qt5 的 clip 向外取整
+与缓存中间面的整数平移不同），所以它从来没有栅格可丢，净额纹丝不动：</p>
+<pre><code>streaming replacement: geometry 16-&gt;17 builds 29-&gt;29 glyph-bytes 325512-&gt;325512 direct-paints 94
+</code></pre>
+<p><code>geometry +1</code> 和 <code>builds 不变</code> 都成立，只有第三条不成立——而它在这台机器上<strong>没有
+可判定的对象</strong>。修法不是在两个平台之间挑一个，而是把判据落到实际对象上：</p>
+<pre><code class="language-cpp">// 只有该行真的持有时，&quot;丢弃&quot;才有断言对象。
+qsizetype glyphRasterBytesForLine(int lineIndex) const;   // bench hook
+...
+require(lineBytesAfter == 0, &quot;…discard its cached pixels…&quot;);
+require(lineBytesBefore == 0 || bytesAfterReplacement &lt; textBytes,
+        &quot;…release the replaced line's share of the cache&quot;);
+</code></pre>
+<h4>9.7.5i 三条「等待」类断言：<code>flushEvents()</code> 只跑一轮，异步完成排在它后面</h4>
+<p>三个用例都把「异步提交完成后 UI 应同步」写成 <code>apply…(); flushEvents(); require(…)</code>。
+设置字段是<strong>异步持久化</strong>的：<code>submitDraft</code> 先发 <code>Pending</code>（accepted 仍是旧值），写完
+再发 <code>Clean</code>（accepted 换新）。widget 只在收到通知后 <code>QTimer::singleShot(0, …)</code> 重建，
+所以一轮 <code>processEvents</code> 可能正好落在两个通知之间：</p>
+<pre><code>CLOUD-REBUILD force=0 default=[6775e195-…] rows=1      ← 全是旧值
+cloud destination sync: sessionDefault=  value=6775e195-…   ← session 已是空，控件没有
+</code></pre>
+<p>判据改成等状态到位，而不是采样一次：</p>
+<pre><code class="language-cpp">waitUntil([&amp;] { return destination-&gt;currentValue().toString() == defaultId; }, &quot;…&quot;);
+waitUntil([&amp;] { return widget.findChild&lt;QWidget*&gt;(&quot;cloudUploadRow:&quot; + id) != nullptr; }, &quot;…&quot;);
+</code></pre>
+<p>同一批里另外两条「跨平台只能有一个值」的：</p>
+<ul>
+<li><code>QUrl::fromLocalFile("C:/split.png")</code> 在 Unix 上把盘符当路径段，<code>toLocalFile()</code> 得到
+  <code>/C:/split.png</code>，拖放列表永远不等于硬编码的期望。用 <code>QTemporaryDir::filePath()</code> 造 URL。</li>
+<li>xlsx 包里可能有<strong>目录条目</strong>（<code>xl/</code> 之类，payload 长度 0）。测试支撑代码原来写
+  <code>check(length &gt; 0)</code>，遇到目录条目就抛「invalid Excel workbook package」——而且所有
+  <code>check()</code> 共用同一句消息，等于没有信息。改成跳过 <code>name.endsWith('/')</code>，并给每个
+  <code>check()</code> 一个步骤名。</li>
+</ul>
+<h4>9.7.5j 录音面板的中性态是 Export Settings，不是 Select</h4>
+<p>截图面板里「重复点已激活的工具」会切回 Select；录音面板照抄这条逻辑，
+<code>alreadyActive &amp;&amp; tool != Tool::Select ? Tool::Select : tool</code> 对 Select 本身是
+空操作，于是「再点一次 Select」「重复按同一个绘图快捷键」都停在工具上：</p>
+<pre><code>clicking active Select must return to Export Settings
+repeating a recording tool shortcut must return to Export Settings like a button click
+hidden recording hotkeys retain their Export Settings toggle
+</code></pre>
+<p>录音面板没有「选中元素」这个空闲态，它的中性态是 Export Settings（区域编辑）。
+所以重复激活要走 <code>setRecordingExportSettingsVisible(true)</code>——它内部
+<code>clearActiveTool()</code> + <code>emit selectRequested()</code>，正好把 canvas 收回到 <code>RegionEditing</code>：</p>
+<pre><code class="language-cpp">// activateToolFromToolbar
+if (alreadyActive &amp;&amp; m_options.recordingDrawingMode) {
+    setRecordingExportSettingsVisible(true);
+    return true;
+}
+</code></pre>
+<p>注意不能加 <code>toggleVisibleButton</code> 限定：<code>activateDrawingShortcut()</code> 走这条路时传的是
+<code>false</code>，加了条件就漏掉快捷键那条用例。</p>
+<h4>9.7.5k 构建产物清理：<code>.ilk</code> 与 <code>.pdb</code> 可以先删</h4>
+<p>本机 Debug 树到 25.6 G 时 <code>df</code> 只剩 375 M，链接直接失败：</p>
+<pre><code>LINK : fatal error LNK1201: 写入程序数据库&quot;…tests.pdb&quot;时出错
+</code></pre>
+<p><code>LNK1201</code> 是<strong>磁盘满伪装成的链接错误</strong>（和 <code>STATUS_ACCESS_VIOLATION</code> 伪装成 rustc
+崩溃同一类）。可安全删除且只触发重链接（不重编译）的：</p>
+<ul>
+<li><code>*.ilk</code>（增量链接数据库，删了下次全量链接）</li>
+<li><code>*.pdb</code>（除正在调试的那几个，删了链接时重建）</li>
+</ul>
+<p>实测 16 个 <code>.ilk</code> 2.27 G + 70 个 <code>.pdb</code> 3.02 G，共释放约 5.3 G。<strong>不动</strong> <code>cargo/</code>、
+<code>.tools/</code>、<code>artifacts/</code>。</p>
 <h4>9.7.6 外部依赖 / 子进程 / 网络（其余）</h4>
 <p><code>mcp-fixture</code>、<code>mcp-application-fixture</code>、<code>recording-build-profiles</code>（Python traceback）、
 <code>api-client</code>（"local API test server timed out waiting for a request"）、

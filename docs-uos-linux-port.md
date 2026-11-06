@@ -8506,6 +8506,155 @@ QRectF snappedInternalClip(const QRectF& clip, const QRect& core, const QTransfo
 #endif
 ```
 
+#### 9.7.5f 2026-11-06：一条 Qt6-only 诊断把整个测试步骤吞了
+
+上一轮为了定位 `empty document fast path` 的差一档，在
+`screenshot_export_artifact_tests.cpp` 里加了
+
+```cpp
+rendered.colorSpace().description()
+```
+
+`QColorSpace::description()` 是 Qt 6.8 才有的成员。Linux 侧编译直接失败：
+
+```
+error: 'class QColorSpace' has no member named 'description'
+FAILED: snow_shot/CMakeFiles/snow-shot-export-artifact-tests.dir/...
+```
+
+ninja 在第一个失败后停止调度，于是 **`Unit tests` 这个步骤根本没跑**，CI 报的
+`27 tests failed` 里一条测试结果都没有——整轮只有这一个编译错误。也就是说
+「修好一条断言」和「CI 变绿」之间隔着一层编译门禁，而门禁外的红没有任何信息量。
+
+本机没暴露它的原因不是编译器宽容，而是 **mtime 陷阱**：那个 TU 上一次编译成功后
+时间戳比源码新，ninja 认为它是最新的，改动从未进过 `cl.exe`（同一轮里
+`collage-document` 也栽在这上面，换新二进制后直接通过）。
+
+规则：**诊断代码同样受「Qt5 可用面」约束**。要标识一个 `QColorSpace`，用两代都有的
+结构量：
+
+```cpp
+qDebug() << int(space.primaries()) << int(space.transferFunction()) << int(image.format());
+```
+
+`description()`（6.8）、`colorModel()`（6.0）、`toIccProfile()`（6.0，Qt5 叫
+`iccProfile()`）三个全部不可用。sRGB 与 Display P3 的 `primaries()` 不同，而断言
+比较的正是这个，所以结构量足够定位。
+
+顺带一条：**改完源码先 `touch`**。`cmake --build` 静默返回 0 不代表这个 TU 被重编过；
+删过 `.pdb`/`.ilk` 之后尤其要确认链接真的发生了（日志里应有 `Linking CXX executable`）。
+
+#### 9.7.5g 断言链的滚雪球：一次 CI 只能暴露每条用例的第一处失败
+
+`require()` 是 `std::_Exit(EXIT_FAILURE)`，用例在第一条不成立的断言处终止。于是
+「修好 A」之后，同一个用例里的 B 成为下一条红——这一轮有四处都是这样：
+
+| 用例 | 修前第一条红 | 修后暴露的第二条 |
+|---|---|---|
+| `image-split-editor` | damage 覆盖度 | 空态拖放路径（`C:/split.png`） |
+| `cloud-upload` | destination 同步 | 三行全宽列（同一根因：异步接受值） |
+| `screen-recording-shortcut` | 重复点 Select | 重复按绘图快捷键 |
+| `settings-navigation` | 按钮按文本定尺寸 | （本机 70 s，超时 60 s） |
+
+所以「CI 从 38 掉到 27」不等于「修好了 11 条」，其中若干只是把红挪到了下一行。
+判断进展要看**同一用例的断言行号是否前移**，而不是看总数。
+
+#### 9.7.5h 共享缓存总量证明不了「某一行被丢弃」
+
+`ScreenshotOcrTextLayer::glyphRasterBytes()` 是整个共享缓存的净额。断言
+`bytesAfterReplacement < textBytes` 想说的是「被替换的那一行丢掉了它的栅格」，但
+共享净额无法区分是哪一行。Linux 上这一行本来就走**直绘**
+（`paintRaster()` 里 `directClip != cachedClip` 的取整检查没过，Qt5 的 clip 向外取整
+与缓存中间面的整数平移不同），所以它从来没有栅格可丢，净额纹丝不动：
+
+```
+streaming replacement: geometry 16->17 builds 29->29 glyph-bytes 325512->325512 direct-paints 94
+```
+
+`geometry +1` 和 `builds 不变` 都成立，只有第三条不成立——而它在这台机器上**没有
+可判定的对象**。修法不是在两个平台之间挑一个，而是把判据落到实际对象上：
+
+```cpp
+// 只有该行真的持有时，"丢弃"才有断言对象。
+qsizetype glyphRasterBytesForLine(int lineIndex) const;   // bench hook
+...
+require(lineBytesAfter == 0, "…discard its cached pixels…");
+require(lineBytesBefore == 0 || bytesAfterReplacement < textBytes,
+        "…release the replaced line's share of the cache");
+```
+
+#### 9.7.5i 三条「等待」类断言：`flushEvents()` 只跑一轮，异步完成排在它后面
+
+三个用例都把「异步提交完成后 UI 应同步」写成 `apply…(); flushEvents(); require(…)`。
+设置字段是**异步持久化**的：`submitDraft` 先发 `Pending`（accepted 仍是旧值），写完
+再发 `Clean`（accepted 换新）。widget 只在收到通知后 `QTimer::singleShot(0, …)` 重建，
+所以一轮 `processEvents` 可能正好落在两个通知之间：
+
+```
+CLOUD-REBUILD force=0 default=[6775e195-…] rows=1      ← 全是旧值
+cloud destination sync: sessionDefault=  value=6775e195-…   ← session 已是空，控件没有
+```
+
+判据改成等状态到位，而不是采样一次：
+
+```cpp
+waitUntil([&] { return destination->currentValue().toString() == defaultId; }, "…");
+waitUntil([&] { return widget.findChild<QWidget*>("cloudUploadRow:" + id) != nullptr; }, "…");
+```
+
+同一批里另外两条「跨平台只能有一个值」的：
+
+- `QUrl::fromLocalFile("C:/split.png")` 在 Unix 上把盘符当路径段，`toLocalFile()` 得到
+  `/C:/split.png`，拖放列表永远不等于硬编码的期望。用 `QTemporaryDir::filePath()` 造 URL。
+- xlsx 包里可能有**目录条目**（`xl/` 之类，payload 长度 0）。测试支撑代码原来写
+  `check(length > 0)`，遇到目录条目就抛「invalid Excel workbook package」——而且所有
+  `check()` 共用同一句消息，等于没有信息。改成跳过 `name.endsWith('/')`，并给每个
+  `check()` 一个步骤名。
+
+#### 9.7.5j 录音面板的中性态是 Export Settings，不是 Select
+
+截图面板里「重复点已激活的工具」会切回 Select；录音面板照抄这条逻辑，
+`alreadyActive && tool != Tool::Select ? Tool::Select : tool` 对 Select 本身是
+空操作，于是「再点一次 Select」「重复按同一个绘图快捷键」都停在工具上：
+
+```
+clicking active Select must return to Export Settings
+repeating a recording tool shortcut must return to Export Settings like a button click
+hidden recording hotkeys retain their Export Settings toggle
+```
+
+录音面板没有「选中元素」这个空闲态，它的中性态是 Export Settings（区域编辑）。
+所以重复激活要走 `setRecordingExportSettingsVisible(true)`——它内部
+`clearActiveTool()` + `emit selectRequested()`，正好把 canvas 收回到 `RegionEditing`：
+
+```cpp
+// activateToolFromToolbar
+if (alreadyActive && m_options.recordingDrawingMode) {
+    setRecordingExportSettingsVisible(true);
+    return true;
+}
+```
+
+注意不能加 `toggleVisibleButton` 限定：`activateDrawingShortcut()` 走这条路时传的是
+`false`，加了条件就漏掉快捷键那条用例。
+
+#### 9.7.5k 构建产物清理：`.ilk` 与 `.pdb` 可以先删
+
+本机 Debug 树到 25.6 G 时 `df` 只剩 375 M，链接直接失败：
+
+```
+LINK : fatal error LNK1201: 写入程序数据库"…tests.pdb"时出错
+```
+
+`LNK1201` 是**磁盘满伪装成的链接错误**（和 `STATUS_ACCESS_VIOLATION` 伪装成 rustc
+崩溃同一类）。可安全删除且只触发重链接（不重编译）的：
+
+- `*.ilk`（增量链接数据库，删了下次全量链接）
+- `*.pdb`（除正在调试的那几个，删了链接时重建）
+
+实测 16 个 `.ilk` 2.27 G + 70 个 `.pdb` 3.02 G，共释放约 5.3 G。**不动** `cargo/`、
+`.tools/`、`artifacts/`。
+
 #### 9.7.6 外部依赖 / 子进程 / 网络（其余）
 
 `mcp-fixture`、`mcp-application-fixture`、`recording-build-profiles`（Python traceback）、
